@@ -7,6 +7,8 @@
  */
 #define NO_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
+#include "json-writer.h"
+#include "structured-logging.h"
 
 struct dir_entry {
 	struct hashmap_entry ent;
@@ -578,6 +580,7 @@ static void threaded_lazy_init_name_hash(
 
 static void lazy_init_name_hash(struct index_state *istate)
 {
+	uint64_t start = getnanotime();
 
 	if (istate->name_hash_initialized)
 		return;
@@ -602,6 +605,31 @@ static void lazy_init_name_hash(struct index_state *istate)
 	}
 
 	istate->name_hash_initialized = 1;
+
+	if (slog_want_detail_event("index")) {
+		struct json_writer jw = JSON_WRITER_INIT;
+		uint64_t now_ns = getnanotime();
+		uint64_t elapsed_us = (now_ns - start) / 1000;
+
+		jw_object_begin(&jw, slog_is_pretty());
+		{
+			jw_object_intmax(&jw, "cache_nr", istate->cache_nr);
+			jw_object_intmax(&jw, "elapsed_us", elapsed_us);
+			jw_object_intmax(&jw, "dir_count",
+					 hashmap_get_size(&istate->dir_hash));
+			jw_object_intmax(&jw, "dir_tablesize",
+					 istate->dir_hash.tablesize);
+			jw_object_intmax(&jw, "name_count",
+					 hashmap_get_size(&istate->name_hash));
+			jw_object_intmax(&jw, "name_tablesize",
+					 istate->name_hash.tablesize);
+		}
+		jw_end(&jw);
+
+		slog_emit_detail_event("index", "lazy_init_name_hash", &jw);
+		jw_release(&jw);
+	}
+
 	trace_performance_leave("initialize name hash");
 }
 
