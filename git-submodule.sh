@@ -252,12 +252,13 @@ Use -f if you really want to add it." >&2
 		fi
 
 	else
-		if test -d ".git/modules/$sm_name"
+		sm_gitdir="$(git submodule--helper gitdir "$sm_name")"
+		if test -d "$sm_gitdir"
 		then
 			if test -z "$force"
 			then
 				eval_gettextln >&2 "A git directory for '\$sm_name' is found locally with remote(s):"
-				GIT_DIR=".git/modules/$sm_name" GIT_WORK_TREE=. git remote -v | grep '(fetch)' | sed -e s,^,"  ", -e s,' (fetch)',, >&2
+				GIT_DIR="$sm_gitdir" GIT_WORK_TREE=. git remote -v | grep '(fetch)' | sed -e s,^,"  ", -e s,' (fetch)',, >&2
 				die "$(eval_gettextln "\
 If you want to reuse this local git directory instead of cloning again from
   \$realrepo

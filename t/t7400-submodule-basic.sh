@@ -923,7 +923,7 @@ test_expect_success 'recursive relative submodules stay relative' '
 		cd clone2 &&
 		git submodule update --init --recursive &&
 		echo "gitdir: ../.git/modules/sub3" >./sub3/.git_expect &&
-		echo "gitdir: ../../../.git/modules/sub3/modules/dirdir/subsub" >./sub3/dirdir/subsub/.git_expect
+		echo "gitdir: ../../../.git/modules/sub3/modules/dirdir%2fsubsub" >./sub3/dirdir/subsub/.git_expect
 	) &&
 	test_cmp clone2/sub3/.git_expect clone2/sub3/.git &&
 	test_cmp clone2/sub3/dirdir/subsub/.git_expect clone2/sub3/dirdir/subsub/.git
@@ -1312,6 +1312,36 @@ test_expect_success 'recursive clone respects -q' '
 	test_when_finished "rm -rf multisuper_clone" &&
 	git clone -q --recurse-submodules multisuper multisuper_clone >actual &&
 	test_must_be_empty actual
+'
+
+test_expect_success 'resolve submodule gitdir in superprojects modules directory' '
+	test_when_finished "rm -rf superproject submodule" &&
+
+	# Create a superproject with a submodule which contains a "/"
+	test_create_repo submodule &&
+	test_commit -C submodule one &&
+	test_create_repo superproject &&
+	git -C superproject submodule add ../submodule sub/module &&
+	git -C superproject commit -m "add submodule" &&
+
+	# "/" characters in submodule names are properly urlencoded before
+	# being used to construct a path to the submodules gitdir.
+	cat >expect <<-EOF &&
+	$(git -C superproject rev-parse --git-common-dir)/modules/sub%2fmodule
+	EOF
+	git -C superproject submodule--helper gitdir "sub/module" >actual &&
+	test_cmp expect actual &&
+	test_path_is_dir "superproject/.git/modules/sub%2fmodule" &&
+
+	# Test the old-fashioned way of storing submodules in the
+	# "modules" directory by directly renaming the submodules gitdir
+	mkdir superproject/.git/modules/sub/ &&
+	mv superproject/.git/modules/sub%2fmodule superproject/.git/modules/sub/module &&
+	cat >expect <<-EOF &&
+	$(git -C superproject rev-parse --git-common-dir)/modules/sub/module
+	EOF
+	git -C superproject submodule--helper gitdir "sub/module" >actual &&
+	test_cmp expect actual
 '
 
 test_done
