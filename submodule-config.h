@@ -56,6 +56,9 @@ void submodule_free(struct repository *r);
  */
 int check_submodule_name(const char *name);
 
+int print_config_from_gitmodules(const char *key);
+int config_set_in_gitmodules_file_gently(const char *key, const char *value);
+
 /*
  * Note: these helper functions exist solely to maintain backward
  * compatibility with 'fetch' and 'update_clone' storing configuration in

@@ -2148,6 +2148,34 @@ static int check_name(int argc, const char **argv, const char *prefix)
 	return 0;
 }
 
+static int module_config(int argc, const char **argv, const char *prefix)
+{
+	/* Equivalent to ACTION_GET in builtin/config.c */
+	if (argc == 2)
+		return print_config_from_gitmodules(argv[1]);
+
+	/* Equivalent to ACTION_SET in builtin/config.c */
+	if (argc == 3) {
+		struct object_id oid;
+
+		/*
+		 * If the .gitmodules file is not in the working tree but it
+		 * is in the current branch, stop, as writing new values (and
+		 * staging them) would blindly overwrite ALL the old content.
+		 *
+		 * This check still makes it possible to create a brand new
+		 * .gitmodules when it is safe to do so: when neither
+		 * GITMODULES_FILE nor GITMODULES_HEAD exist.
+		 */
+		if (!file_exists(GITMODULES_FILE) && get_oid(GITMODULES_HEAD, &oid) >= 0)
+			die(_("please make sure that the .gitmodules file in the current branch is checked out"));
+
+		return config_set_in_gitmodules_file_gently(argv[1], argv[2]);
+	}
+
+	die("submodule--helper config takes 1 or 2 arguments: name [value]");
+}
+
 #define SUPPORT_SUPER_PREFIX (1<<0)
 
 struct cmd_struct {
@@ -2178,6 +2206,7 @@ static struct cmd_struct commands[] = {
 	{"absorb-git-dirs", absorb_git_dirs, SUPPORT_SUPER_PREFIX},
 	{"is-active", is_active, 0},
 	{"check-name", check_name, 0},
+	{"config", module_config, 0},
 };
 
 int cmd_submodule__helper(int argc, const char **argv, const char *prefix)

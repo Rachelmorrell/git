@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "dir.h"
 #include "repository.h"
 #include "config.h"
 #include "submodule-config.h"
@@ -603,8 +604,19 @@ static void submodule_cache_check_init(struct repository *repo)
 static void config_from_gitmodules(config_fn_t fn, struct repository *repo, void *data)
 {
 	if (repo->worktree) {
-		char *file = repo_worktree_path(repo, GITMODULES_FILE);
-		git_config_from_file(fn, file, data);
+		struct git_config_source config_source = { 0 };
+		const struct config_options opts = { 0 };
+		struct object_id oid;
+		char *file;
+
+		file = repo_worktree_path(repo, GITMODULES_FILE);
+		if (file_exists(file))
+			config_source.file = file;
+		else if (get_oid(GITMODULES_HEAD, &oid) >= 0)
+			config_source.blob = GITMODULES_HEAD;
+
+		config_with_options(fn, data, &config_source, &opts);
+
 		free(file);
 	}
 }
@@ -680,6 +692,43 @@ void submodule_free(struct repository *r)
 {
 	if (r->submodule_cache)
 		submodule_cache_clear(r->submodule_cache);
+}
+
+static int config_print_callback(const char *key_, const char *value_, void *cb_data)
+{
+	char *key = cb_data;
+
+	if (!strcmp(key, key_))
+		printf("%s\n", value_);
+
+	return 0;
+}
+
+int print_config_from_gitmodules(const char *key)
+{
+	int ret;
+	char *store_key;
+
+	ret = git_config_parse_key(key, &store_key, NULL);
+	if (ret < 0)
+		return CONFIG_INVALID_KEY;
+
+	config_from_gitmodules(config_print_callback, the_repository, store_key);
+
+	free(store_key);
+	return 0;
+}
+
+int config_set_in_gitmodules_file_gently(const char *key, const char *value)
+{
+	int ret;
+
+	ret = git_config_set_in_file_gently(GITMODULES_FILE, key, value);
+	if (ret < 0)
+		/* Maybe the user already did that, don't error out here */
+		warning(_("Could not update .gitmodules entry %s"), key);
+
+	return ret;
 }
 
 struct fetch_config {
