@@ -50,6 +50,10 @@ static int gently_parse_list_objects_filter(
 			return 0;
 		}
 
+	} else if (!strcmp(arg, "tree:0")) {
+		filter_options->choice = LOFC_TREE_NONE;
+		return 0;
+
 	} else if (skip_prefix(arg, "sparse:oid=", &v0)) {
 		struct object_context oc;
 		struct object_id sparse_oid;
