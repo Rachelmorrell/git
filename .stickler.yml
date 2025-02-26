@@ -1,0 +1,18 @@
+linters:
+  shellcheck:
+    shell: bash
+  flake8:
+    fixer: true
+  golint:
+    fixer: true
+  csslint: {  }
+  phpcs:
+    standard: PSR2
+    fixer: true
+files:
+  ignore:
+    - 'bower_components/*'
+    - 'node_modules/*'
+    - 'vendor/*'
+fixers:
+  enable: true
