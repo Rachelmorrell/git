@@ -70,13 +70,14 @@ test_expect_success 'diff skips same-OID blobs' '
 
 	# Ensure that only a and another-a are fetched.
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client diff HEAD^ HEAD &&
-	grep "want $(cat hash-old-a)" trace &&
-	grep "want $(cat hash-new-a)" trace &&
-	! grep "want $(cat hash-b)" trace
+	test_grep "want $(cat hash-old-a)" trace &&
+	test_grep "want $(cat hash-new-a)" trace &&
+	test_grep ! "want $(cat hash-b)" trace
 '
 
 test_expect_success 'when fetching missing objects, diff skips GITLINKs' '
 	test_when_finished "rm -rf sub server client trace" &&
+	test_config_global protocol.file.allow always &&
 
 	test_create_repo sub &&
 	test_commit -C sub first &&
@@ -102,8 +103,8 @@ test_expect_success 'when fetching missing objects, diff skips GITLINKs' '
 	# Ensure that a and another-a are fetched, and check (by successful
 	# execution of the diff) that no invalid OIDs are sent.
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client diff HEAD^ HEAD &&
-	grep "want $(cat hash-old-a)" trace &&
-	grep "want $(cat hash-new-a)" trace
+	test_grep "want $(cat hash-old-a)" trace &&
+	test_grep "want $(cat hash-new-a)" trace
 '
 
 test_expect_success 'diff with rename detection batches blobs' '
@@ -126,9 +127,75 @@ test_expect_success 'diff with rename detection batches blobs' '
 	# Ensure that there is exactly 1 negotiation by checking that there is
 	# only 1 "done" line sent. ("done" marks the end of negotiation.)
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client diff --raw -M HEAD^ HEAD >out &&
-	grep ":100644 100644.*R[0-9][0-9][0-9].*b.*c" out &&
+	test_grep ":100644 100644.*R[0-9][0-9][0-9].*b.*c" out &&
 	grep "fetch> done" trace >done_lines &&
 	test_line_count = 1 done_lines
+'
+
+test_expect_success 'diff succeeds even if prefetch triggered by break-rewrites' '
+	test_when_finished "rm -rf server client trace" &&
+
+	test_create_repo server &&
+	echo xyz >server/foo &&
+	mkdir server/bar &&
+	test_seq -f "line %d" 1 100 >server/bar/baz &&
+	git -C server add -A &&
+	git -C server commit -m x &&
+
+	echo xyzz >server/foo &&
+	test_seq -f "line %d" 90 190 >server/bar/baz &&
+	git -C server add -A &&
+	git -C server commit -m x &&
+
+	test_config -C server uploadpack.allowfilter 1 &&
+	test_config -C server uploadpack.allowanysha1inwant 1 &&
+	git clone --filter=blob:limit=0 "file://$(pwd)/server" client &&
+
+	# Fetch bar/baz without fetching foo.
+	# Foo will be lazily fetched during break rewrites detection.
+	git -C client checkout HEAD~1 bar &&
+
+	# Ensure baz in the working tree is different from baz in HEAD~1.
+	# We need baz to trigger break-rewrites detection.
+	git -C client reset --hard HEAD &&
+
+	# break-rewrites detection in reset.
+	git -C client reset HEAD~1
+'
+
+test_expect_success 'diff succeeds even if entries are removed from queue' '
+	test_when_finished "rm -rf server client trace" &&
+
+	test_create_repo server &&
+	for l in a c e g i p
+	do
+		echo $l >server/$l &&
+		git -C server add $l || return 1
+	done &&
+	git -C server commit -m x &&
+
+	for l in a e i
+	do
+		git -C server rm $l || return 1
+	done &&
+
+	for l in b d f i
+		do
+		echo $l$l >server/$l &&
+		git -C server add $l || return 1
+	done &&
+	git -C server commit -a -m x &&
+
+	test_config -C server uploadpack.allowfilter 1 &&
+	test_config -C server uploadpack.allowanysha1inwant 1 &&
+	git clone --filter=blob:limit=0 "file://$(pwd)/server" client &&
+
+	for file in $(ls client)
+	do
+		cat client/$file >$file &&
+		mv $file client/$file || return 1
+	done &&
+	git -C client diff --name-only --relative HEAD^
 '
 
 test_expect_success 'diff does not fetch anything if inexact rename detection is not needed' '
@@ -149,7 +216,7 @@ test_expect_success 'diff does not fetch anything if inexact rename detection is
 
 	# Ensure no fetches.
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client diff --raw -M HEAD^ HEAD &&
-	! test_path_exists trace
+	test_path_is_missing trace
 '
 
 test_expect_success 'diff --break-rewrites fetches only if necessary, and batches blobs if it does' '
@@ -169,7 +236,7 @@ test_expect_success 'diff --break-rewrites fetches only if necessary, and batche
 
 	# Ensure no fetches.
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client diff --raw -M HEAD^ HEAD &&
-	! test_path_exists trace &&
+	test_path_is_missing trace &&
 
 	# But with --break-rewrites, ensure that there is exactly 1 negotiation
 	# by checking that there is only 1 "done" line sent. ("done" marks the

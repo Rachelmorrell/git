@@ -3,7 +3,9 @@
  * documentation about the design and use of reference iterators.
  */
 
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "refs.h"
 #include "refs/refs-internal.h"
 #include "iterator.h"
@@ -13,60 +15,53 @@ int ref_iterator_advance(struct ref_iterator *ref_iterator)
 	return ref_iterator->vtable->advance(ref_iterator);
 }
 
-int ref_iterator_peel(struct ref_iterator *ref_iterator,
-		      struct object_id *peeled)
+int ref_iterator_seek(struct ref_iterator *ref_iterator, const char *refname,
+		      unsigned int flags)
 {
-	return ref_iterator->vtable->peel(ref_iterator, peeled);
+	return ref_iterator->vtable->seek(ref_iterator, refname, flags);
 }
 
-int ref_iterator_abort(struct ref_iterator *ref_iterator)
+void ref_iterator_free(struct ref_iterator *ref_iterator)
 {
-	return ref_iterator->vtable->abort(ref_iterator);
+	if (ref_iterator) {
+		ref_iterator->vtable->release(ref_iterator);
+		/* Help make use-after-free bugs fail quickly: */
+		ref_iterator->vtable = NULL;
+		free(ref_iterator);
+	}
 }
 
 void base_ref_iterator_init(struct ref_iterator *iter,
-			    struct ref_iterator_vtable *vtable,
-			    int ordered)
+			    struct ref_iterator_vtable *vtable)
 {
 	iter->vtable = vtable;
-	iter->ordered = !!ordered;
-	iter->refname = NULL;
-	iter->oid = NULL;
-	iter->flags = 0;
-}
-
-void base_ref_iterator_free(struct ref_iterator *iter)
-{
-	/* Help make use-after-free bugs fail quickly: */
-	iter->vtable = NULL;
-	free(iter);
+	memset(&iter->ref, 0, sizeof(iter->ref));
 }
 
 struct empty_ref_iterator {
 	struct ref_iterator base;
 };
 
-static int empty_ref_iterator_advance(struct ref_iterator *ref_iterator)
+static int empty_ref_iterator_advance(struct ref_iterator *ref_iterator UNUSED)
 {
-	return ref_iterator_abort(ref_iterator);
-}
-
-static int empty_ref_iterator_peel(struct ref_iterator *ref_iterator,
-				   struct object_id *peeled)
-{
-	BUG("peel called for empty iterator");
-}
-
-static int empty_ref_iterator_abort(struct ref_iterator *ref_iterator)
-{
-	base_ref_iterator_free(ref_iterator);
 	return ITER_DONE;
 }
 
+static int empty_ref_iterator_seek(struct ref_iterator *ref_iterator UNUSED,
+				   const char *refname UNUSED,
+				   unsigned int flags UNUSED)
+{
+	return 0;
+}
+
+static void empty_ref_iterator_release(struct ref_iterator *ref_iterator UNUSED)
+{
+}
+
 static struct ref_iterator_vtable empty_ref_iterator_vtable = {
-	empty_ref_iterator_advance,
-	empty_ref_iterator_peel,
-	empty_ref_iterator_abort
+	.advance = empty_ref_iterator_advance,
+	.seek = empty_ref_iterator_seek,
+	.release = empty_ref_iterator_release,
 };
 
 struct ref_iterator *empty_ref_iterator_begin(void)
@@ -74,7 +69,7 @@ struct ref_iterator *empty_ref_iterator_begin(void)
 	struct empty_ref_iterator *iter = xcalloc(1, sizeof(*iter));
 	struct ref_iterator *ref_iterator = &iter->base;
 
-	base_ref_iterator_init(ref_iterator, &empty_ref_iterator_vtable, 1);
+	base_ref_iterator_init(ref_iterator, &empty_ref_iterator_vtable);
 	return ref_iterator;
 }
 
@@ -86,7 +81,8 @@ int is_empty_ref_iterator(struct ref_iterator *ref_iterator)
 struct merge_ref_iterator {
 	struct ref_iterator base;
 
-	struct ref_iterator *iter0, *iter1;
+	struct ref_iterator *iter0, *iter0_owned;
+	struct ref_iterator *iter1, *iter1_owned;
 
 	ref_iterator_select_fn *select;
 	void *cb_data;
@@ -97,6 +93,49 @@ struct merge_ref_iterator {
 	 */
 	struct ref_iterator **current;
 };
+
+enum iterator_selection ref_iterator_select(struct ref_iterator *iter_worktree,
+					    struct ref_iterator *iter_common,
+					    void *cb_data UNUSED)
+{
+	if (iter_worktree && !iter_common) {
+		/*
+		 * Return the worktree ref if there are no more common refs.
+		 */
+		return ITER_SELECT_0;
+	} else if (iter_common) {
+		/*
+		 * In case we have pending worktree and common refs we need to
+		 * yield them based on their lexicographical order. Worktree
+		 * refs that have the same name as common refs shadow the
+		 * latter.
+		 */
+		if (iter_worktree) {
+			int cmp = strcmp(iter_worktree->ref.name,
+					 iter_common->ref.name);
+			if (cmp < 0)
+				return ITER_SELECT_0;
+			else if (!cmp)
+				return ITER_SELECT_0_SKIP_1;
+		}
+
+		 /*
+		  * We now know that the lexicographically-next ref is a common
+		  * ref. When the common ref is a shared one we return it.
+		  */
+		if (parse_worktree_ref(iter_common->ref.name, NULL, NULL,
+				       NULL) == REF_WORKTREE_SHARED)
+			return ITER_SELECT_1;
+
+		/*
+		 * Otherwise, if the common ref is a per-worktree ref we skip
+		 * it because it would belong to the main worktree, not ours.
+		 */
+		return ITER_SKIP_1;
+	} else {
+		return ITER_DONE;
+	}
+}
 
 static int merge_ref_iterator_advance(struct ref_iterator *ref_iterator)
 {
@@ -135,9 +174,8 @@ static int merge_ref_iterator_advance(struct ref_iterator *ref_iterator)
 			iter->select(iter->iter0, iter->iter1, iter->cb_data);
 
 		if (selection == ITER_SELECT_DONE) {
-			return ref_iterator_abort(ref_iterator);
+			return ITER_DONE;
 		} else if (selection == ITER_SELECT_ERROR) {
-			ref_iterator_abort(ref_iterator);
 			return ITER_ERROR;
 		}
 
@@ -158,56 +196,52 @@ static int merge_ref_iterator_advance(struct ref_iterator *ref_iterator)
 		}
 
 		if (selection & ITER_YIELD_CURRENT) {
-			iter->base.refname = (*iter->current)->refname;
-			iter->base.oid = (*iter->current)->oid;
-			iter->base.flags = (*iter->current)->flags;
+			iter->base.ref = (*iter->current)->ref;
 			return ITER_OK;
 		}
 	}
 
 error:
-	ref_iterator_abort(ref_iterator);
 	return ITER_ERROR;
 }
 
-static int merge_ref_iterator_peel(struct ref_iterator *ref_iterator,
-				   struct object_id *peeled)
+static int merge_ref_iterator_seek(struct ref_iterator *ref_iterator,
+				   const char *refname, unsigned int flags)
 {
 	struct merge_ref_iterator *iter =
 		(struct merge_ref_iterator *)ref_iterator;
+	int ret;
 
-	if (!iter->current) {
-		BUG("peel called before advance for merge iterator");
-	}
-	return ref_iterator_peel(*iter->current, peeled);
+	iter->current = NULL;
+	iter->iter0 = iter->iter0_owned;
+	iter->iter1 = iter->iter1_owned;
+
+	ret = ref_iterator_seek(iter->iter0, refname, flags);
+	if (ret < 0)
+		return ret;
+
+	ret = ref_iterator_seek(iter->iter1, refname, flags);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
-static int merge_ref_iterator_abort(struct ref_iterator *ref_iterator)
+static void merge_ref_iterator_release(struct ref_iterator *ref_iterator)
 {
 	struct merge_ref_iterator *iter =
 		(struct merge_ref_iterator *)ref_iterator;
-	int ok = ITER_DONE;
-
-	if (iter->iter0) {
-		if (ref_iterator_abort(iter->iter0) != ITER_DONE)
-			ok = ITER_ERROR;
-	}
-	if (iter->iter1) {
-		if (ref_iterator_abort(iter->iter1) != ITER_DONE)
-			ok = ITER_ERROR;
-	}
-	base_ref_iterator_free(ref_iterator);
-	return ok;
+	ref_iterator_free(iter->iter0_owned);
+	ref_iterator_free(iter->iter1_owned);
 }
 
 static struct ref_iterator_vtable merge_ref_iterator_vtable = {
-	merge_ref_iterator_advance,
-	merge_ref_iterator_peel,
-	merge_ref_iterator_abort
+	.advance = merge_ref_iterator_advance,
+	.seek = merge_ref_iterator_seek,
+	.release = merge_ref_iterator_release,
 };
 
 struct ref_iterator *merge_ref_iterator_begin(
-		int ordered,
 		struct ref_iterator *iter0, struct ref_iterator *iter1,
 		ref_iterator_select_fn *select, void *cb_data)
 {
@@ -222,9 +256,9 @@ struct ref_iterator *merge_ref_iterator_begin(
 	 * references through only if they exist in both iterators.
 	 */
 
-	base_ref_iterator_init(ref_iterator, &merge_ref_iterator_vtable, ordered);
-	iter->iter0 = iter0;
-	iter->iter1 = iter1;
+	base_ref_iterator_init(ref_iterator, &merge_ref_iterator_vtable);
+	iter->iter0 = iter->iter0_owned = iter0;
+	iter->iter1 = iter->iter1_owned = iter1;
 	iter->select = select;
 	iter->cb_data = cb_data;
 	iter->current = NULL;
@@ -238,7 +272,7 @@ struct ref_iterator *merge_ref_iterator_begin(
  */
 static enum iterator_selection overlay_iterator_select(
 		struct ref_iterator *front, struct ref_iterator *back,
-		void *cb_data)
+		void *cb_data UNUSED)
 {
 	int cmp;
 
@@ -247,7 +281,7 @@ static enum iterator_selection overlay_iterator_select(
 	else if (!front)
 		return ITER_SELECT_1;
 
-	cmp = strcmp(front->refname, back->refname);
+	cmp = strcmp(front->ref.name, back->ref.name);
 
 	if (cmp < 0)
 		return ITER_SELECT_0;
@@ -266,17 +300,14 @@ struct ref_iterator *overlay_ref_iterator_begin(
 	 * them.
 	 */
 	if (is_empty_ref_iterator(front)) {
-		ref_iterator_abort(front);
+		ref_iterator_free(front);
 		return back;
 	} else if (is_empty_ref_iterator(back)) {
-		ref_iterator_abort(back);
+		ref_iterator_free(back);
 		return front;
-	} else if (!front->ordered || !back->ordered) {
-		BUG("overlay_ref_iterator requires ordered inputs");
 	}
 
-	return merge_ref_iterator_begin(1, front, back,
-					overlay_iterator_select, NULL);
+	return merge_ref_iterator_begin(front, back, overlay_iterator_select, NULL);
 }
 
 struct prefix_ref_iterator {
@@ -308,24 +339,18 @@ static int prefix_ref_iterator_advance(struct ref_iterator *ref_iterator)
 	int ok;
 
 	while ((ok = ref_iterator_advance(iter->iter0)) == ITER_OK) {
-		int cmp = compare_prefix(iter->iter0->refname, iter->prefix);
-
+		int cmp = compare_prefix(iter->iter0->ref.name, iter->prefix);
 		if (cmp < 0)
 			continue;
+		/*
+		 * As the source iterator is ordered, we
+		 * can stop the iteration as soon as we see a
+		 * refname that comes after the prefix:
+		 */
+		if (cmp > 0)
+			return ITER_DONE;
 
-		if (cmp > 0) {
-			/*
-			 * If the source iterator is ordered, then we
-			 * can stop the iteration as soon as we see a
-			 * refname that comes after the prefix:
-			 */
-			if (iter->iter0->ordered) {
-				ok = ref_iterator_abort(iter->iter0);
-				break;
-			} else {
-				continue;
-			}
-		}
+		iter->base.ref = iter->iter0->ref;
 
 		if (iter->trim) {
 			/*
@@ -337,50 +362,42 @@ static int prefix_ref_iterator_advance(struct ref_iterator *ref_iterator)
 			 * one character left in the refname after
 			 * trimming, report it as a bug:
 			 */
-			if (strlen(iter->iter0->refname) <= iter->trim)
+			if (strlen(iter->base.ref.name) <= iter->trim)
 				BUG("attempt to trim too many characters");
-			iter->base.refname = iter->iter0->refname + iter->trim;
-		} else {
-			iter->base.refname = iter->iter0->refname;
+			iter->base.ref.name += iter->trim;
 		}
 
-		iter->base.oid = iter->iter0->oid;
-		iter->base.flags = iter->iter0->flags;
 		return ITER_OK;
 	}
 
-	iter->iter0 = NULL;
-	if (ref_iterator_abort(ref_iterator) != ITER_DONE)
-		return ITER_ERROR;
 	return ok;
 }
 
-static int prefix_ref_iterator_peel(struct ref_iterator *ref_iterator,
-				    struct object_id *peeled)
+static int prefix_ref_iterator_seek(struct ref_iterator *ref_iterator,
+				    const char *refname, unsigned int flags)
 {
 	struct prefix_ref_iterator *iter =
 		(struct prefix_ref_iterator *)ref_iterator;
 
-	return ref_iterator_peel(iter->iter0, peeled);
+	if (flags & REF_ITERATOR_SEEK_SET_PREFIX) {
+		free(iter->prefix);
+		iter->prefix = xstrdup_or_null(refname);
+	}
+	return ref_iterator_seek(iter->iter0, refname, flags);
 }
 
-static int prefix_ref_iterator_abort(struct ref_iterator *ref_iterator)
+static void prefix_ref_iterator_release(struct ref_iterator *ref_iterator)
 {
 	struct prefix_ref_iterator *iter =
 		(struct prefix_ref_iterator *)ref_iterator;
-	int ok = ITER_DONE;
-
-	if (iter->iter0)
-		ok = ref_iterator_abort(iter->iter0);
+	ref_iterator_free(iter->iter0);
 	free(iter->prefix);
-	base_ref_iterator_free(ref_iterator);
-	return ok;
 }
 
 static struct ref_iterator_vtable prefix_ref_iterator_vtable = {
-	prefix_ref_iterator_advance,
-	prefix_ref_iterator_peel,
-	prefix_ref_iterator_abort
+	.advance = prefix_ref_iterator_advance,
+	.seek = prefix_ref_iterator_seek,
+	.release = prefix_ref_iterator_release,
 };
 
 struct ref_iterator *prefix_ref_iterator_begin(struct ref_iterator *iter0,
@@ -393,10 +410,10 @@ struct ref_iterator *prefix_ref_iterator_begin(struct ref_iterator *iter0,
 	if (!*prefix && !trim)
 		return iter0; /* optimization: no need to wrap iterator */
 
-	iter = xcalloc(1, sizeof(*iter));
+	CALLOC_ARRAY(iter, 1);
 	ref_iterator = &iter->base;
 
-	base_ref_iterator_init(ref_iterator, &prefix_ref_iterator_vtable, iter0->ordered);
+	base_ref_iterator_init(ref_iterator, &prefix_ref_iterator_vtable);
 
 	iter->iter0 = iter0;
 	iter->prefix = xstrdup(prefix);
@@ -405,31 +422,20 @@ struct ref_iterator *prefix_ref_iterator_begin(struct ref_iterator *iter0,
 	return ref_iterator;
 }
 
-struct ref_iterator *current_ref_iter = NULL;
-
-int do_for_each_repo_ref_iterator(struct repository *r, struct ref_iterator *iter,
-				  each_repo_ref_fn fn, void *cb_data)
+int do_for_each_ref_iterator(struct ref_iterator *iter,
+			     refs_for_each_cb fn, void *cb_data)
 {
 	int retval = 0, ok;
-	struct ref_iterator *old_ref_iter = current_ref_iter;
 
-	current_ref_iter = iter;
 	while ((ok = ref_iterator_advance(iter)) == ITER_OK) {
-		retval = fn(r, iter->refname, iter->oid, iter->flags, cb_data);
-		if (retval) {
-			/*
-			 * If ref_iterator_abort() returns ITER_ERROR,
-			 * we ignore that error in deference to the
-			 * callback function's return value.
-			 */
-			ref_iterator_abort(iter);
+		retval = fn(&iter->ref, cb_data);
+		if (retval)
 			goto out;
-		}
 	}
 
 out:
-	current_ref_iter = old_ref_iter;
 	if (ok == ITER_ERROR)
-		return -1;
+		retval = -1;
+	ref_iterator_free(iter);
 	return retval;
 }

@@ -4,6 +4,7 @@
 #
 
 test_description='git merge-tree'
+
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -82,6 +83,33 @@ merged
 EXPECTED
 
 	test_cmp expected actual
+'
+
+test_expect_success '3-way merge with --attr-source' '
+	test_when_finished rm -rf 3-way &&
+	git init 3-way &&
+	(
+		cd 3-way &&
+		test_commit initial file1 foo &&
+		base=$(git rev-parse HEAD) &&
+		git checkout -b brancha &&
+		echo bar >>file1 &&
+		git commit -am "adding bar" &&
+		source=$(git rev-parse HEAD) &&
+		git checkout @{-1} &&
+		git checkout -b branchb &&
+		echo baz >>file1 &&
+		git commit -am "adding baz" &&
+		merge=$(git rev-parse HEAD) &&
+		git checkout -b gitattributes &&
+		test_commit "gitattributes" .gitattributes "file1 merge=union" &&
+		git checkout @{-1} &&
+		tree=$(git --attr-source=gitattributes merge-tree --write-tree \
+		--merge-base "$base" --end-of-options "$source" "$merge") &&
+		test_write_lines foo bar baz >expect &&
+		git cat-file -p "$tree:file1" >actual &&
+		test_cmp expect actual
+	)
 '
 
 test_expect_success 'file change A, B (same)' '
@@ -330,6 +358,107 @@ test_expect_success 'turn tree to file' '
 	+CCC
 	EOF
 	test_cmp expect actual
+'
+
+test_expect_success 'merge-tree respects core.useReplaceRefs=false' '
+	test_commit merge-to &&
+	test_commit valid base &&
+	git reset --hard HEAD^ &&
+	test_commit malicious base &&
+
+	test_when_finished "git replace -d $(git rev-parse valid^0)" &&
+	git replace valid^0 malicious^0 &&
+
+	tree=$(git -c core.useReplaceRefs=true merge-tree --write-tree merge-to valid) &&
+	merged=$(git cat-file -p $tree:base) &&
+	test malicious = $merged &&
+
+	tree=$(git -c core.useReplaceRefs=false merge-tree --write-tree merge-to valid) &&
+	merged=$(git cat-file -p $tree:base) &&
+	test valid = $merged
+'
+
+# A couple of tests to ensure merge-tree does not undergo a heap
+# buffer overflow.
+#
+# Number of lines per file, and every Nth line is a conflict site.
+# With N=5 and 2100 lines there are 420 independent conflict hunks per file.
+# We use the specified MARKER_SIZE as it amounts to around 10MiB of conflict
+# hunk text for each conflict in the file. This helps us to quickly trigger
+# the heap buffer overflow with just 420 conflict hunks.
+#
+# The merged file comes out at just over 4GiB. On 64-bit builds merge-tree
+# must produce it. On 32-bit builds it cannot fit in size_t, so merge-tree
+# must die instead of wrapping the size and overflowing the buffer.
+LINES=2100
+STEP=5
+MARKER_SIZE=3495254
+
+# gen_file <label>: emit a file whose conflict-site lines carry <label>.
+# Context lines between sites contain alphanumerics so that xdiff does not
+# coalesce neighbouring hunks into one large conflict.
+gen_file () {
+	n=1
+	while test $n -le $LINES
+	do
+		if test $(($n % $STEP)) = 0
+		then
+			echo "$1 site $n"
+		else
+			echo "context line $n"
+		fi
+		n=$(($n + 1))
+	done
+}
+
+test_expect_success EXPENSIVE 'setup: base commit with attributes' '
+	echo "big.txt conflict-marker-size=$MARKER_SIZE" >.gitattributes &&
+	gen_file base >big.txt &&
+	gen_file base >other.txt &&
+	git add .gitattributes big.txt other.txt &&
+	git commit -m base &&
+	git branch -M main &&
+
+	git checkout -b side1 main &&
+	gen_file ours >big.txt &&
+	gen_file ours >other.txt &&
+	git commit -a -m side1 &&
+
+	git checkout -b side2 main &&
+	gen_file theirs >big.txt &&
+	gen_file theirs >other.txt &&
+	git commit -a -m side2
+'
+
+# We have LONG_IS_64BIT as a prerequisite since we guard against downcasts
+# from 64-bit size_t to 32-bit long (for example on Windows)
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT,LONG_IS_64BIT 'no buffer overflow in merge-tree --write-tree' '
+	test_expect_code 1 git merge-tree --write-tree side1 side2 >out &&
+	tree=$(head -n 1 out) &&
+	git cat-file -e "$tree^{tree}"
+'
+
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT,LONG_IS_64BIT 'conflicted paths are listed without buffer overflow' '
+	test_expect_code 1 git merge-tree --write-tree --name-only \
+		side1 side2 >out &&
+	sed -n "2,\$p" out | sed "/^\$/,\$d" | sort -u >actual &&
+	cat >expect <<-\EOF &&
+	big.txt
+	other.txt
+	EOF
+	test_cmp expect actual
+'
+
+# Ensure we properly identify a downcast from 64-bit size_t to
+# 32-bit long on Windows
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT,!LONG_IS_64BIT 'merge-tree dies when merge buffer size does not fit long' '
+	test_must_fail git merge-tree --write-tree side1 side2 2>err &&
+	test_grep "failure to merge" err
+'
+
+test_expect_success EXPENSIVE,!SIZE_T_IS_64BIT 'merge-tree dies when merge buffer size overflows size_t' '
+	test_must_fail git merge-tree --write-tree side1 side2 2>err &&
+	test_grep "size_t overflow" err
 '
 
 test_done

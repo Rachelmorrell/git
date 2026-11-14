@@ -8,6 +8,7 @@ gitk_libdir   ?= $(sharedir)/gitk/lib
 msgsdir    ?= $(gitk_libdir)/msgs
 msgsdir_SQ  = $(subst ','\'',$(msgsdir))
 
+SHELL_PATH ?= /bin/sh
 TCL_PATH ?= tclsh
 TCLTK_PATH ?= wish
 INSTALL ?= install
@@ -33,18 +34,21 @@ ifdef NO_MSGFMT
 	MSGFMT ?= $(TCL_PATH) po/po2msg.sh
 else
 	MSGFMT ?= msgfmt
-	ifneq ($(shell $(MSGFMT) --tcl -l C -d . /dev/null 2>/dev/null; echo $$?),0)
+        ifneq ($(shell $(MSGFMT) --tcl -l C -d . /dev/null 2>/dev/null; echo $$?),0)
 		MSGFMT := $(TCL_PATH) po/po2msg.sh
-	endif
+        endif
 endif
 
 PO_TEMPLATE = po/gitk.pot
 ALL_POFILES = $(wildcard po/*.po)
 ALL_MSGFILES = $(subst .po,.msg,$(ALL_POFILES))
 
+ifneq ($(findstring s,$(firstword -$(MAKEFLAGS))),s)
 ifndef V
 	QUIET          = @
 	QUIET_GEN      = $(QUIET)echo '   ' GEN $@ &&
+	QUIET_MSGFMT   = $(QUIET)echo '   ' MSGFMT $@ &&
+endif
 endif
 
 all:: gitk-wish $(ALL_MSGFILES)
@@ -64,17 +68,17 @@ clean::
 
 gitk-wish: gitk GIT-TCLTK-VARS
 	$(QUIET_GEN)$(RM) $@ $@+ && \
-	sed -e '1,3s|^exec .* "$$0"|exec $(subst |,'\|',$(TCLTK_PATH_SQ)) "$$0"|' <gitk >$@+ && \
-	chmod +x $@+ && \
-	mv -f $@+ $@
+	$(SHELL_PATH) ./generate-tcl.sh "$(TCLTK_PATH_SQ)" "$<" "$@"
 
 $(PO_TEMPLATE): gitk
-	$(XGETTEXT) -kmc -LTcl -o $@ gitk
+	$(XGETTEXT) -kmc -LTcl --package-name=Gitk -o $@ gitk
 update-po:: $(PO_TEMPLATE)
-	$(foreach p, $(ALL_POFILES), echo Updating $p ; msgmerge -U $p $(PO_TEMPLATE) ; )
+	$(foreach p, $(ALL_POFILES), echo Updating $p ; msgmerge -U --add-location $p $(PO_TEMPLATE) ; )
+	@echo "Before committing changes, ensure that a clean-filter is installed:"; \
+	echo; \
+	echo "	git config filter.gettext-no-location.clean \"msgcat --no-location -\""
 $(ALL_MSGFILES): %.msg : %.po
-	@echo Generating catalog $@
-	$(MSGFMT) --statistics --tcl $< -l $(basename $(notdir $<)) -d $(dir $@)
+	$(QUIET_MSGFMT)$(MSGFMT) --tcl -l $(basename $(notdir $<)) -d $(dir $@) $<
 
 .PHONY: all install uninstall clean update-po
 .PHONY: FORCE

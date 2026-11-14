@@ -28,10 +28,10 @@ test_expect_success setup '
 test_expect_success pull '
 (
 	cd cloned &&
-	git pull --log &&
+	git pull --no-rebase --log &&
 	git log -2 &&
 	git cat-file commit HEAD >result &&
-	grep Dollar result
+	test_grep Dollar result
 )
 '
 
@@ -41,11 +41,11 @@ test_expect_success '--log=1 limits shortlog length' '
 	git reset --hard HEAD^ &&
 	test "$(cat afile)" = original &&
 	test "$(cat bfile)" = added &&
-	git pull --log=1 &&
+	git pull --no-rebase --log=1 &&
 	git log -3 &&
 	git cat-file commit HEAD >result &&
-	grep Dollar result &&
-	! grep "second commit" result
+	test_grep Dollar result &&
+	test_grep ! "second commit" result
 )
 '
 

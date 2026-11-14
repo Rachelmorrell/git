@@ -1,11 +1,15 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "environment.h"
+#include "gettext.h"
 #include "config.h"
-#include "object-store.h"
+#include "hex.h"
+#include "odb.h"
+#include "strbuf.h"
 #include "xdiff-interface.h"
 #include "xdiff/xtypes.h"
 #include "xdiff/xdiffi.h"
-#include "xdiff/xemit.h"
-#include "xdiff/xmacros.h"
 #include "xdiff/xutils.h"
 
 struct xdiff_emit_state {
@@ -31,29 +35,36 @@ static int xdiff_out_hunk(void *priv_,
 	return 0;
 }
 
-static void consume_one(void *priv_, char *s, unsigned long size)
+static int consume_one(void *priv_, char *s, unsigned long size)
 {
 	struct xdiff_emit_state *priv = priv_;
 	char *ep;
 	while (size) {
 		unsigned long this_size;
+		int ret;
 		ep = memchr(s, '\n', size);
 		this_size = (ep == NULL) ? size : (ep - s + 1);
-		priv->line_fn(priv->consume_callback_data, s, this_size);
+		ret = priv->line_fn(priv->consume_callback_data, s, this_size);
+		if (ret)
+			return ret;
 		size -= this_size;
 		s += this_size;
 	}
+	return 0;
 }
 
-static int xdiff_outf(void *priv_, mmbuffer_t *mb, int nbuf)
+static int xdiff_outf(void *priv_, mmfile_t *mb, int nbuf)
 {
 	struct xdiff_emit_state *priv = priv_;
 	int i;
+	int stop = 0;
 
 	if (!priv->line_fn)
 		return 0;
 
 	for (i = 0; i < nbuf; i++) {
+		if (stop)
+			return 1;
 		if (mb[i].ptr[mb[i].size-1] != '\n') {
 			/* Incomplete line */
 			strbuf_add(&priv->remainder, mb[i].ptr, mb[i].size);
@@ -62,17 +73,21 @@ static int xdiff_outf(void *priv_, mmbuffer_t *mb, int nbuf)
 
 		/* we have a complete line */
 		if (!priv->remainder.len) {
-			consume_one(priv, mb[i].ptr, mb[i].size);
+			stop = consume_one(priv, mb[i].ptr, mb[i].size);
 			continue;
 		}
 		strbuf_add(&priv->remainder, mb[i].ptr, mb[i].size);
-		consume_one(priv, priv->remainder.buf, priv->remainder.len);
+		stop = consume_one(priv, priv->remainder.buf, priv->remainder.len);
 		strbuf_reset(&priv->remainder);
 	}
+	if (stop)
+		return -1;
 	if (priv->remainder.len) {
-		consume_one(priv, priv->remainder.buf, priv->remainder.len);
+		stop = consume_one(priv, priv->remainder.buf, priv->remainder.len);
 		strbuf_reset(&priv->remainder);
 	}
+	if (stop)
+		return -1;
 	return 0;
 }
 
@@ -115,12 +130,6 @@ int xdi_diff(mmfile_t *mf1, mmfile_t *mf2, xpparam_t const *xpp, xdemitconf_t co
 	return xdl_diff(&a, &b, xpp, xecfg, xecb);
 }
 
-void discard_hunk_line(void *priv,
-		       long ob, long on, long nb, long nn,
-		       const char *func, long funclen)
-{
-}
-
 int xdi_diff_outf(mmfile_t *mf1, mmfile_t *mf2,
 		  xdiff_emit_hunk_fn hunk_fn,
 		  xdiff_emit_line_fn line_fn,
@@ -154,11 +163,12 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 
 	if (stat(filename, &st))
 		return error_errno("Could not stat %s", filename);
-	if ((f = fopen(filename, "rb")) == NULL)
+	if (!(f = fopen(filename, "rb")))
 		return error_errno("Could not open %s", filename);
 	sz = xsize_t(st.st_size);
-	ptr->ptr = xmalloc(sz ? sz : 1);
+	ptr->ptr = xmallocz(sz);
 	if (sz && fread(ptr->ptr, sz, 1, f) != 1) {
+		FREE_AND_NULL(ptr->ptr);
 		fclose(f);
 		return error("Could not read %s", filename);
 	}
@@ -167,18 +177,19 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 	return 0;
 }
 
-void read_mmblob(mmfile_t *ptr, const struct object_id *oid)
+void read_mmblob(mmfile_t *ptr, struct object_database *odb,
+		 const struct object_id *oid)
 {
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 
-	if (oideq(oid, &null_oid)) {
+	if (is_null_oid(oid)) {
 		ptr->ptr = xstrdup("");
 		ptr->size = 0;
 		return;
 	}
 
-	ptr->ptr = read_object_file(oid, &type, &size);
+	ptr->ptr = odb_read_object(odb, oid, &type, &size);
 	if (!ptr->ptr || type != OBJ_BLOB)
 		die("unable to read blob object %s", oid_to_hex(oid));
 	ptr->size = size;
@@ -290,7 +301,7 @@ void xdiff_clear_find_func(xdemitconf_t *xecfg)
 
 unsigned long xdiff_hash_string(const char *s, size_t len, long flags)
 {
-	return xdl_hash_record(&s, s + len, flags);
+	return xdl_hash_record((uint8_t const**)&s, (uint8_t const*)s + len, flags);
 }
 
 int xdiff_compare_lines(const char *l1, long s1,
@@ -299,25 +310,47 @@ int xdiff_compare_lines(const char *l1, long s1,
 	return xdl_recmatch(l1, s1, l2, s2, flags);
 }
 
+int parse_conflict_style_name(const char *value)
+{
+	if (!strcmp(value, "diff3"))
+		return XDL_MERGE_DIFF3;
+	else if (!strcmp(value, "zdiff3"))
+		return XDL_MERGE_ZEALOUS_DIFF3;
+	else if (!strcmp(value, "merge"))
+		return 0;
+	/*
+	 * Please update _git_checkout() in git-completion.bash when
+	 * you add new merge config
+	 */
+	else
+		return -1;
+}
+
+const char *conflict_style_name(int style)
+{
+	switch (style) {
+	case XDL_MERGE_DIFF3:
+		return "diff3";
+	case XDL_MERGE_ZEALOUS_DIFF3:
+		return "zdiff3";
+	default:
+		return "merge";
+	}
+}
+
 int git_xmerge_style = -1;
 
-int git_xmerge_config(const char *var, const char *value, void *cb)
+int git_xmerge_config(const char *var, const char *value,
+		      const struct config_context *ctx, void *cb)
 {
 	if (!strcmp(var, "merge.conflictstyle")) {
 		if (!value)
-			die("'%s' is not a boolean", var);
-		if (!strcmp(value, "diff3"))
-			git_xmerge_style = XDL_MERGE_DIFF3;
-		else if (!strcmp(value, "merge"))
-			git_xmerge_style = 0;
-		/*
-		 * Please update _git_checkout() in
-		 * git-completion.bash when you add new merge config
-		 */
-		else
-			die("unknown style '%s' given for '%s'",
-			    value, var);
+			return config_error_nonbool(var);
+		git_xmerge_style = parse_conflict_style_name(value);
+		if (git_xmerge_style == -1)
+			return error(_("unknown style '%s' given for '%s'"),
+				     value, var);
 		return 0;
 	}
-	return git_default_config(var, value, cb);
+	return git_default_config(var, value, ctx, cb);
 }

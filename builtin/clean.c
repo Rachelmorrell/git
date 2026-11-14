@@ -6,12 +6,19 @@
  * Based on git-clean.sh by Pavel Roskin
  */
 
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
-#include "cache.h"
+#include "abspath.h"
 #include "config.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
 #include "parse-options.h"
+#include "path.h"
+#include "read-cache-ll.h"
+#include "setup.h"
 #include "string-list.h"
 #include "quote.h"
 #include "column.h"
@@ -20,13 +27,13 @@
 #include "help.h"
 #include "prompt.h"
 
-static int force = -1; /* unset */
+static int require_force = -1; /* unset */
 static int interactive;
 static struct string_list del_list = STRING_LIST_INIT_DUP;
 static unsigned int colopts;
 
 static const char *const builtin_clean_usage[] = {
-	N_("git clean [-d] [-f] [-i] [-n] [-q] [-e <pattern>] [-x | -X] [--] <paths>..."),
+	N_("git clean [-d] [-f] [-i] [-n] [-q] [-e <pattern>] [-x | -X] [--] [<pathspec>...]"),
 	NULL
 };
 
@@ -36,6 +43,8 @@ static const char *msg_skip_git_dir = N_("Skipping repository %s\n");
 static const char *msg_would_skip_git_dir = N_("Would skip repository %s\n");
 static const char *msg_warn_remove_failed = N_("failed to remove %s");
 static const char *msg_warn_lstat_failed = N_("could not lstat %s\n");
+static const char *msg_skip_cwd = N_("Refusing to remove current working directory\n");
+static const char *msg_would_skip_cwd = N_("Would refuse to remove current working directory\n");
 
 enum color_clean {
 	CLEAN_COLOR_RESET = 0,
@@ -55,7 +64,7 @@ static const char *color_interactive_slots[] = {
 	[CLEAN_COLOR_RESET]  = "reset",
 };
 
-static int clean_use_color = -1;
+static enum git_colorbool clean_use_color = GIT_COLOR_UNKNOWN;
 static char clean_colors[][COLOR_MAXLEN] = {
 	[CLEAN_COLOR_ERROR] = GIT_COLOR_BOLD_RED,
 	[CLEAN_COLOR_HEADER] = GIT_COLOR_BOLD,
@@ -97,7 +106,8 @@ struct menu_stuff {
 
 define_list_config_array(color_interactive_slots);
 
-static int git_clean_config(const char *var, const char *value, void *cb)
+static int git_clean_config(const char *var, const char *value,
+			    const struct config_context *ctx, void *cb)
 {
 	const char *slot_name;
 
@@ -120,12 +130,14 @@ static int git_clean_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "clean.requireforce")) {
-		force = !git_config_bool(var, value);
+		require_force = git_config_bool(var, value);
 		return 0;
 	}
 
-	/* inspect the color.ui config variable and others */
-	return git_color_default_config(var, value, cb);
+	if (git_color_config(var, value, cb) < 0)
+		return -1;
+
+	return git_default_config(var, value, ctx, cb);
 }
 
 static const char *clean_get_color(enum color_clean ix)
@@ -153,6 +165,8 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 {
 	DIR *dir;
 	struct strbuf quoted = STRBUF_INIT;
+	struct strbuf realpath = STRBUF_INIT;
+	struct strbuf real_ocwd = STRBUF_INIT;
 	struct dirent *e;
 	int res = 0, ret = 0, gone = 1, original_len = path->len, len;
 	struct string_list dels = STRING_LIST_INIT_DUP;
@@ -189,10 +203,8 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 	strbuf_complete(path, '/');
 
 	len = path->len;
-	while ((e = readdir(dir)) != NULL) {
+	while ((e = readdir_skip_dot_and_dotdot(dir)) != NULL) {
 		struct stat st;
-		if (is_dot_or_dotdot(e->d_name))
-			continue;
 
 		strbuf_setlen(path, len);
 		strbuf_addstr(path, e->d_name);
@@ -233,16 +245,36 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 	strbuf_setlen(path, original_len);
 
 	if (*dir_gone) {
-		res = dry_run ? 0 : rmdir(path->buf);
-		if (!res)
-			*dir_gone = 1;
-		else {
-			int saved_errno = errno;
-			quote_path(path->buf, prefix, &quoted, 0);
-			errno = saved_errno;
-			warning_errno(_(msg_warn_remove_failed), quoted.buf);
+		/*
+		 * Normalize path components in path->buf, e.g. change '\' to
+		 * '/' on Windows.
+		 */
+		strbuf_realpath(&realpath, path->buf, 1);
+
+		/*
+		 * path and realpath are absolute; for comparison, we would
+		 * like to transform startup_info->original_cwd to an absolute
+		 * path too.
+		 */
+		 if (startup_info->original_cwd)
+			 strbuf_realpath(&real_ocwd,
+					 startup_info->original_cwd, 1);
+
+		if (!strbuf_cmp(&realpath, &real_ocwd)) {
+			printf("%s", dry_run ? _(msg_would_skip_cwd) : _(msg_skip_cwd));
 			*dir_gone = 0;
-			ret = 1;
+		} else {
+			res = dry_run ? 0 : rmdir(path->buf);
+			if (!res)
+				*dir_gone = 1;
+			else {
+				int saved_errno = errno;
+				quote_path(path->buf, prefix, &quoted, 0);
+				errno = saved_errno;
+				warning_errno(_(msg_warn_remove_failed), quoted.buf);
+				*dir_gone = 0;
+				ret = 1;
+			}
 		}
 	}
 
@@ -252,6 +284,8 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 			printf(dry_run ?  _(msg_would_remove) : _(msg_remove), dels.items[i].string);
 	}
 out:
+	strbuf_release(&realpath);
+	strbuf_release(&real_ocwd);
 	strbuf_release(&quoted);
 	string_list_clear(&dels, 0);
 	return ret;
@@ -444,43 +478,39 @@ static int find_unique(const char *choice, struct menu_stuff *menu_stuff)
  */
 static int parse_choice(struct menu_stuff *menu_stuff,
 			int is_single,
-			struct strbuf input,
+			char *input,
 			int **chosen)
 {
-	struct strbuf **choice_list, **ptr;
+	struct string_list choice = STRING_LIST_INIT_NODUP;
+	struct string_list_item *item;
 	int nr = 0;
 	int i;
 
-	if (is_single) {
-		choice_list = strbuf_split_max(&input, '\n', 0);
-	} else {
-		char *p = input.buf;
-		do {
-			if (*p == ',')
-				*p = ' ';
-		} while (*p++);
-		choice_list = strbuf_split_max(&input, ' ', 0);
-	}
+	string_list_split_in_place_f(&choice, input,
+				     is_single ? "\n" : ", ", -1,
+				     STRING_LIST_SPLIT_TRIM);
 
-	for (ptr = choice_list; *ptr; ptr++) {
-		char *p;
-		int choose = 1;
+	for_each_string_list_item(item, &choice) {
+		const char *string;
+		int choose;
 		int bottom = 0, top = 0;
 		int is_range, is_number;
 
-		strbuf_trim(*ptr);
-		if (!(*ptr)->len)
+		string = item->string;
+		if (!*string)
 			continue;
 
 		/* Input that begins with '-'; unchoose */
-		if (*(*ptr)->buf == '-') {
+		if (string[0] == '-') {
 			choose = 0;
-			strbuf_remove((*ptr), 0, 1);
+			string++;
+		} else {
+			choose = 1;
 		}
 
 		is_range = 0;
 		is_number = 1;
-		for (p = (*ptr)->buf; *p; p++) {
+		for (const char *p = string; *p; p++) {
 			if ('-' == *p) {
 				if (!is_range) {
 					is_range = 1;
@@ -498,27 +528,27 @@ static int parse_choice(struct menu_stuff *menu_stuff,
 		}
 
 		if (is_number) {
-			bottom = atoi((*ptr)->buf);
+			bottom = atoi(string);
 			top = bottom;
 		} else if (is_range) {
-			bottom = atoi((*ptr)->buf);
+			bottom = atoi(string);
 			/* a range can be specified like 5-7 or 5- */
-			if (!*(strchr((*ptr)->buf, '-') + 1))
+			if (!*(strchr(string, '-') + 1))
 				top = menu_stuff->nr;
 			else
-				top = atoi(strchr((*ptr)->buf, '-') + 1);
-		} else if (!strcmp((*ptr)->buf, "*")) {
+				top = atoi(strchr(string, '-') + 1);
+		} else if (!strcmp(string, "*")) {
 			bottom = 1;
 			top = menu_stuff->nr;
 		} else {
-			bottom = find_unique((*ptr)->buf, menu_stuff);
+			bottom = find_unique(string, menu_stuff);
 			top = bottom;
 		}
 
 		if (top <= 0 || bottom <= 0 || top > menu_stuff->nr || bottom > top ||
 		    (is_single && bottom != top)) {
 			clean_print_color(CLEAN_COLOR_ERROR);
-			printf(_("Huh (%s)?\n"), (*ptr)->buf);
+			printf(_("Huh (%s)?\n"), string);
 			clean_print_color(CLEAN_COLOR_RESET);
 			continue;
 		}
@@ -527,7 +557,7 @@ static int parse_choice(struct menu_stuff *menu_stuff,
 			(*chosen)[i-1] = choose;
 	}
 
-	strbuf_list_free(choice_list);
+	string_list_clear(&choice, 0);
 
 	for (i = 0; i < menu_stuff->nr; i++)
 		nr += (*chosen)[i];
@@ -536,7 +566,7 @@ static int parse_choice(struct menu_stuff *menu_stuff,
 
 /*
  * Implement a git-add-interactive compatible UI, which is borrowed
- * from git-add--interactive.perl.
+ * from add-interactive.c.
  *
  * Return value:
  *
@@ -597,7 +627,7 @@ static int *list_and_choose(struct menu_opts *opts, struct menu_stuff *stuff)
 
 		nr = parse_choice(stuff,
 				  opts->flags & MENU_OPTS_SINGLETON,
-				  choice,
+				  choice.buf,
 				  &chosen);
 
 		if (opts->flags & MENU_OPTS_SINGLETON) {
@@ -623,7 +653,7 @@ static int *list_and_choose(struct menu_opts *opts, struct menu_stuff *stuff)
 				nr += chosen[i];
 		}
 
-		result = xcalloc(st_add(nr, 1), sizeof(int));
+		CALLOC_ARRAY(result, st_add(nr, 1));
 		for (i = 0; i < stuff->nr && j < nr; i++) {
 			if (chosen[i])
 				result[j++] = i;
@@ -643,14 +673,15 @@ static int clean_cmd(void)
 
 static int filter_by_patterns_cmd(void)
 {
-	struct dir_struct dir;
+	struct dir_struct dir = DIR_INIT;
 	struct strbuf confirm = STRBUF_INIT;
-	struct strbuf **ignore_list;
-	struct string_list_item *item;
 	struct pattern_list *pl;
 	int changed = -1, i;
 
 	for (;;) {
+		struct string_list ignore_list = STRING_LIST_INIT_NODUP;
+		struct string_list_item *item;
+
 		if (!del_list.nr)
 			break;
 
@@ -667,23 +698,23 @@ static int filter_by_patterns_cmd(void)
 		if (!confirm.len)
 			break;
 
-		dir_init(&dir);
 		pl = add_pattern_list(&dir, EXC_CMDL, "manual exclude");
-		ignore_list = strbuf_split_max(&confirm, ' ', 0);
 
-		for (i = 0; ignore_list[i]; i++) {
-			strbuf_trim(ignore_list[i]);
-			if (!ignore_list[i]->len)
+		string_list_split_in_place_f(&ignore_list, confirm.buf, " ", -1,
+					     STRING_LIST_SPLIT_TRIM);
+
+		for (i = 0; i < ignore_list.nr; i++) {
+			item = &ignore_list.items[i];
+			if (!*item->string)
 				continue;
-
-			add_pattern(ignore_list[i]->buf, "", 0, pl, -(i+1));
+			add_pattern(item->string, "", 0, pl, -(i+1));
 		}
 
 		changed = 0;
 		for_each_string_list_item(item, &del_list) {
 			int dtype = DT_UNKNOWN;
 
-			if (is_excluded(&dir, &the_index, item->string, &dtype)) {
+			if (is_excluded(&dir, the_repository->index, item->string, &dtype)) {
 				*item->string = '\0';
 				changed++;
 			}
@@ -697,7 +728,7 @@ static int filter_by_patterns_cmd(void)
 			clean_print_color(CLEAN_COLOR_RESET);
 		}
 
-		strbuf_list_free(ignore_list);
+		string_list_clear(&ignore_list, 0);
 		dir_clear(&dir);
 	}
 
@@ -885,14 +916,17 @@ static void correct_untracked_entries(struct dir_struct *dir)
 	dir->nr = dst;
 }
 
-int cmd_clean(int argc, const char **argv, const char *prefix)
+int cmd_clean(int argc,
+	      const char **argv,
+	      const char *prefix,
+	      struct repository *repo UNUSED)
 {
 	int i, res;
 	int dry_run = 0, remove_directories = 0, quiet = 0, ignored = 0;
-	int ignored_only = 0, config_set = 0, errors = 0, gone = 1;
+	int ignored_only = 0, force = 0, errors = 0, gone = 1;
 	int rm_flags = REMOVE_DIR_KEEP_NESTED_GIT;
 	struct strbuf abs_path = STRBUF_INIT;
-	struct dir_struct dir;
+	struct dir_struct dir = DIR_INIT;
 	struct pathspec pathspec;
 	struct strbuf buf = STRBUF_INIT;
 	struct string_list exclude_list = STRING_LIST_INIT_NODUP;
@@ -914,24 +948,13 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		OPT_END()
 	};
 
-	git_config(git_clean_config, NULL);
-	if (force < 0)
-		force = 0;
-	else
-		config_set = 1;
+	repo_config(the_repository, git_clean_config, NULL);
 
 	argc = parse_options(argc, argv, prefix, options, builtin_clean_usage,
 			     0);
 
-	dir_init(&dir);
-	if (!interactive && !dry_run && !force) {
-		if (config_set)
-			die(_("clean.requireForce set to true and neither -i, -n, nor -f given; "
-				  "refusing to clean"));
-		else
-			die(_("clean.requireForce defaults to true and neither -i, -n, nor -f given;"
-				  " refusing to clean"));
-	}
+	if (require_force != 0 && !force && !interactive && !dry_run)
+		die(_("clean.requireForce is true and -f not given: refusing to clean"));
 
 	if (force > 1)
 		rm_flags = 0;
@@ -941,7 +964,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	dir.flags |= DIR_SHOW_OTHER_DIRECTORIES;
 
 	if (ignored && ignored_only)
-		die(_("-x and -X cannot be used together"));
+		die(_("options '%s' and '%s' cannot be used together"), "-x", "-X");
 	if (!ignored)
 		setup_standard_excludes(&dir);
 	if (ignored_only)
@@ -987,7 +1010,10 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		dir.flags |= DIR_KEEP_UNTRACKED_CONTENTS;
 	}
 
-	if (read_cache() < 0)
+	prepare_repo_settings(the_repository);
+	the_repository->settings.command_requires_full_index = 0;
+
+	if (repo_read_index(the_repository) < 0)
 		die(_("index file corrupt"));
 
 	pl = add_pattern_list(&dir, EXC_CMDL, "--exclude option");
@@ -998,23 +1024,21 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		       PATHSPEC_PREFER_CWD,
 		       prefix, argv);
 
-	fill_directory(&dir, &the_index, &pathspec);
+	fill_directory(&dir, the_repository->index, &pathspec);
 	correct_untracked_entries(&dir);
 
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
-		int matches = 0;
 		struct stat st;
 		const char *rel;
 
-		if (!cache_name_is_other(ent->name, ent->len))
+		if (!index_name_is_other(the_repository->index, ent->name, ent->len))
 			continue;
 
 		if (lstat(ent->name, &st))
 			die_errno("Cannot lstat '%s'", ent->name);
 
-		if (S_ISDIR(st.st_mode) && !remove_directories &&
-		    matches != MATCHED_EXACTLY)
+		if (S_ISDIR(st.st_mode) && !remove_directories)
 			continue;
 
 		rel = relative_path(ent->name, prefix, &buf);
@@ -1069,5 +1093,6 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	strbuf_release(&buf);
 	string_list_clear(&del_list, 0);
 	string_list_clear(&exclude_list, 0);
+	clear_pathspec(&pathspec);
 	return (errors != 0);
 }

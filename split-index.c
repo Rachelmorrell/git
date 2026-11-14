@@ -1,11 +1,22 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hash.h"
+#include "mem-pool.h"
+#include "read-cache-ll.h"
+#include "repository.h"
 #include "split-index.h"
+#include "strbuf.h"
 #include "ewah/ewok.h"
 
 struct split_index *init_split_index(struct index_state *istate)
 {
 	if (!istate->split_index) {
-		istate->split_index = xcalloc(1, sizeof(*istate->split_index));
+		if (istate->sparse_index)
+			die(_("cannot use split index with a sparse index"));
+
+		CALLOC_ARRAY(istate->split_index, 1);
 		istate->split_index->refcount = 1;
 	}
 	return istate->split_index;
@@ -14,16 +25,17 @@ struct split_index *init_split_index(struct index_state *istate)
 int read_link_extension(struct index_state *istate,
 			 const void *data_, unsigned long sz)
 {
+	const struct git_hash_algo *algo = istate->repo->hash_algo;
 	const unsigned char *data = data_;
 	struct split_index *si;
 	int ret;
 
-	if (sz < the_hash_algo->rawsz)
+	if (sz < algo->rawsz)
 		return error("corrupt link extension (too short)");
 	si = init_split_index(istate);
-	hashcpy(si->base_oid.hash, data);
-	data += the_hash_algo->rawsz;
-	sz -= the_hash_algo->rawsz;
+	oidread(&si->base_oid, data, algo);
+	data += algo->rawsz;
+	sz -= algo->rawsz;
 	if (!sz)
 		return 0;
 	si->delete_bitmap = ewah_new();
@@ -45,7 +57,7 @@ int write_link_extension(struct strbuf *sb,
 			 struct index_state *istate)
 {
 	struct split_index *si = istate->split_index;
-	strbuf_add(sb, si->base_oid.hash, the_hash_algo->rawsz);
+	strbuf_add(sb, si->base_oid.hash, istate->repo->hash_algo->rawsz);
 	if (!si->delete_bitmap && !si->replace_bitmap)
 		return 0;
 	ewah_serialize_strbuf(si->delete_bitmap, sb);
@@ -87,7 +99,12 @@ void move_cache_to_base_index(struct index_state *istate)
 		mem_pool_combine(istate->ce_mem_pool, istate->split_index->base->ce_mem_pool);
 	}
 
-	si->base = xcalloc(1, sizeof(*si->base));
+	if (si->base)
+		release_index(si->base);
+	else
+		ALLOC_ARRAY(si->base, 1);
+
+	index_state_init(si->base, istate->repo);
 	si->base->version = istate->version;
 	/* zero timestamp disables racy test in ce_write_index() */
 	si->base->timestamp = istate->timestamp;
@@ -207,7 +224,8 @@ static int compare_ce_content(struct cache_entry *a, struct cache_entry *b)
 	b->ce_flags &= ondisk_flags;
 	ret = memcmp(&a->ce_stat_data, &b->ce_stat_data,
 		     offsetof(struct cache_entry, name) -
-		     offsetof(struct cache_entry, ce_stat_data));
+		     offsetof(struct cache_entry, oid)) ||
+		!oideq(&a->oid, &b->oid);
 	a->ce_flags = ce_flags;
 	b->ce_flags = base_flags;
 

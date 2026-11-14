@@ -1,11 +1,13 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "test-tool.h"
-#include "cache.h"
 #include "commit-graph.h"
 #include "commit.h"
-#include "config.h"
-#include "object-store.h"
+#include "environment.h"
+#include "hex.h"
 #include "object.h"
 #include "repository.h"
+#include "setup.h"
 #include "tree.h"
 
 static void test_parse_commit_in_graph(const char *gitdir, const char *worktree,
@@ -14,10 +16,6 @@ static void test_parse_commit_in_graph(const char *gitdir, const char *worktree,
 	struct repository r;
 	struct commit *c;
 	struct commit_list *parent;
-
-	setup_git_env(gitdir);
-
-	memset(the_repository, 0, sizeof(*the_repository));
 
 	if (repo_init(&r, gitdir, worktree))
 		die("Couldn't init repo");
@@ -45,10 +43,6 @@ static void test_get_commit_tree_in_graph(const char *gitdir,
 	struct commit *c;
 	struct tree *tree;
 
-	setup_git_env(gitdir);
-
-	memset(the_repository, 0, sizeof(*the_repository));
-
 	if (repo_init(&r, gitdir, worktree))
 		die("Couldn't init repo");
 
@@ -73,24 +67,20 @@ static void test_get_commit_tree_in_graph(const char *gitdir,
 
 int cmd__repository(int argc, const char **argv)
 {
-	int nongit_ok = 0;
-
-	setup_git_directory_gently(&nongit_ok);
-
 	if (argc < 2)
 		die("must have at least 2 arguments");
 	if (!strcmp(argv[1], "parse_commit_in_graph")) {
 		struct object_id oid;
 		if (argc < 5)
 			die("not enough arguments");
-		if (parse_oid_hex(argv[4], &oid, &argv[4]))
+		if (parse_oid_hex_any(argv[4], &oid, &argv[4]) == GIT_HASH_UNKNOWN)
 			die("cannot parse oid '%s'", argv[4]);
 		test_parse_commit_in_graph(argv[2], argv[3], &oid);
 	} else if (!strcmp(argv[1], "get_commit_tree_in_graph")) {
 		struct object_id oid;
 		if (argc < 5)
 			die("not enough arguments");
-		if (parse_oid_hex(argv[4], &oid, &argv[4]))
+		if (parse_oid_hex_any(argv[4], &oid, &argv[4]) == GIT_HASH_UNKNOWN)
 			die("cannot parse oid '%s'", argv[4]);
 		test_get_commit_tree_in_graph(argv[2], argv[3], &oid);
 	} else {

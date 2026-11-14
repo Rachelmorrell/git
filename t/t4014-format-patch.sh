@@ -5,90 +5,97 @@
 
 test_description='various format-patch tests'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-terminal.sh
 
 test_expect_success setup '
-	for i in 1 2 3 4 5 6 7 8 9 10; do echo "$i"; done >file &&
+	test_write_lines 1 2 3 4 5 6 7 8 9 10 >file &&
 	cat file >elif &&
 	git add file elif &&
 	test_tick &&
 	git commit -m Initial &&
 	git checkout -b side &&
 
-	for i in 1 2 5 6 A B C 7 8 9 10; do echo "$i"; done >file &&
+	test_write_lines 1 2 5 6 A B C 7 8 9 10 >file &&
 	test_chmod +x elif &&
 	test_tick &&
 	git commit -m "Side changes #1" &&
 
-	for i in D E F; do echo "$i"; done >>file &&
+	test_write_lines D E F >>file &&
 	git update-index file &&
 	test_tick &&
 	git commit -m "Side changes #2" &&
 	git tag C2 &&
 
-	for i in 5 6 1 2 3 A 4 B C 7 8 9 10 D E F; do echo "$i"; done >file &&
+	test_write_lines 5 6 1 2 3 A 4 B C 7 8 9 10 D E F >file &&
 	git update-index file &&
 	test_tick &&
 	git commit -m "Side changes #3 with \\n backslash-n in it." &&
 
-	git checkout master &&
+	git checkout main &&
 	git diff-tree -p C2 >patch &&
 	git apply --index <patch &&
 	test_tick &&
-	git commit -m "Master accepts moral equivalent of #2" &&
+	git commit -m "Main accepts moral equivalent of #2" &&
 
 	git checkout side &&
 	git checkout -b patchid &&
-	for i in 5 6 1 2 3 A 4 B C 7 8 9 10 D E F; do echo "$i"; done >file2 &&
-	for i in 1 2 3 A 4 B C 7 8 9 10 D E F 5 6; do echo "$i"; done >file3 &&
-	for i in 8 9 10; do echo "$i"; done >file &&
+	test_write_lines 5 6 1 2 3 A 4 B C 7 8 9 10 D E F >file2 &&
+	test_write_lines 1 2 3 A 4 B C 7 8 9 10 D E F 5 6 >file3 &&
+	test_write_lines 8 9 10 >file &&
 	git add file file2 file3 &&
 	test_tick &&
 	git commit -m "patchid 1" &&
-	for i in 4 A B 7 8 9 10; do echo "$i"; done >file2 &&
-	for i in 8 9 10 5 6; do echo "$i"; done >file3 &&
+	test_write_lines 4 A B 7 8 9 10 >file2 &&
+	test_write_lines 8 9 10 5 6 >file3 &&
 	git add file2 file3 &&
 	test_tick &&
 	git commit -m "patchid 2" &&
-	for i in 10 5 6; do echo "$i"; done >file &&
+	test_write_lines 10 5 6 >file &&
 	git add file &&
 	test_tick &&
 	git commit -m "patchid 3" &&
 
-	git checkout master
+	git checkout -b empty main &&
+	test_tick &&
+	git commit --allow-empty -m "empty commit" &&
+
+	git checkout main
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream' '
-	git format-patch --stdout master..side >patch0 &&
+	git format-patch --stdout main..side >patch0 &&
 	grep "^From " patch0 >from0 &&
 	test_line_count = 3 from0
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream' '
 	git format-patch --stdout \
-		--ignore-if-in-upstream master..side >patch1 &&
+		--ignore-if-in-upstream main..side >patch1 &&
 	grep "^From " patch1 >from1 &&
 	test_line_count = 2 from1
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream handles tags' '
 	git tag -a v1 -m tag side &&
-	git tag -a v2 -m tag master &&
+	git tag -a v2 -m tag main &&
 	git format-patch --stdout --ignore-if-in-upstream v2..v1 >patch1 &&
 	grep "^From " patch1 >from1 &&
 	test_line_count = 2 from1
 '
 
 test_expect_success "format-patch doesn't consider merge commits" '
-	git checkout -b feature master &&
+	git checkout -b feature main &&
 	echo "Another line" >>file &&
 	test_tick &&
 	git commit -am "Feature branch change #1" &&
 	echo "Yet another line" >>file &&
 	test_tick &&
 	git commit -am "Feature branch change #2" &&
-	git checkout -b merger master &&
+	git checkout -b merger main &&
 	test_tick &&
 	git merge --no-ff feature &&
 	git format-patch -3 --stdout >patch &&
@@ -97,32 +104,38 @@ test_expect_success "format-patch doesn't consider merge commits" '
 '
 
 test_expect_success 'format-patch result applies' '
-	git checkout -b rebuild-0 master &&
+	git checkout -b rebuild-0 main &&
 	git am -3 patch0 &&
-	git rev-list master.. >list &&
+	git rev-list main.. >list &&
 	test_line_count = 2 list
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream result applies' '
-	git checkout -b rebuild-1 master &&
+	git checkout -b rebuild-1 main &&
 	git am -3 patch1 &&
-	git rev-list master.. >list &&
+	git rev-list main.. >list &&
 	test_line_count = 2 list
 '
 
 test_expect_success 'commit did not screw up the log message' '
 	git cat-file commit side >actual &&
-	grep "^Side .* with .* backslash-n" actual
+	test_grep "^Side .* with .* backslash-n" actual
 '
 
 test_expect_success 'format-patch did not screw up the log message' '
-	grep "^Subject: .*Side changes #3 with .* backslash-n" patch0 &&
-	grep "^Subject: .*Side changes #3 with .* backslash-n" patch1
+	test_grep "^Subject: .*Side changes #3 with .* backslash-n" patch0 &&
+	test_grep "^Subject: .*Side changes #3 with .* backslash-n" patch1
 '
 
 test_expect_success 'replay did not screw up the log message' '
 	git cat-file commit rebuild-1 >actual &&
-	grep "^Side .* with .* backslash-n" actual
+	test_grep "^Side .* with .* backslash-n" actual
+'
+
+test_expect_success 'format-patch empty commit' '
+	git format-patch --stdout main..empty >empty &&
+	grep "^From " empty >from &&
+	test_line_count = 1 from
 '
 
 test_expect_success 'extra headers' '
@@ -130,99 +143,99 @@ test_expect_success 'extra headers' '
 " &&
 	git config --add format.headers "Cc: S E Cipient <scipient@example.com>
 " &&
-	git format-patch --stdout master..side >patch2 &&
+	git format-patch --stdout main..side >patch2 &&
 	sed -e "/^\$/q" patch2 >hdrs2 &&
-	grep "^To: R E Cipient <rcipient@example.com>\$" hdrs2 &&
-	grep "^Cc: S E Cipient <scipient@example.com>\$" hdrs2
+	test_grep "^To: R E Cipient <rcipient@example.com>\$" hdrs2 &&
+	test_grep "^Cc: S E Cipient <scipient@example.com>\$" hdrs2
 '
 
 test_expect_success 'extra headers without newlines' '
 	git config --replace-all format.headers "To: R E Cipient <rcipient@example.com>" &&
 	git config --add format.headers "Cc: S E Cipient <scipient@example.com>" &&
-	git format-patch --stdout master..side >patch3 &&
+	git format-patch --stdout main..side >patch3 &&
 	sed -e "/^\$/q" patch3 >hdrs3 &&
-	grep "^To: R E Cipient <rcipient@example.com>\$" hdrs3 &&
-	grep "^Cc: S E Cipient <scipient@example.com>\$" hdrs3
+	test_grep "^To: R E Cipient <rcipient@example.com>\$" hdrs3 &&
+	test_grep "^Cc: S E Cipient <scipient@example.com>\$" hdrs3
 '
 
 test_expect_success 'extra headers with multiple To:s' '
 	git config --replace-all format.headers "To: R E Cipient <rcipient@example.com>" &&
 	git config --add format.headers "To: S E Cipient <scipient@example.com>" &&
-	git format-patch --stdout master..side >patch4 &&
+	git format-patch --stdout main..side >patch4 &&
 	sed -e "/^\$/q" patch4 >hdrs4 &&
-	grep "^To: R E Cipient <rcipient@example.com>,\$" hdrs4 &&
-	grep "^ *S E Cipient <scipient@example.com>\$" hdrs4
+	test_grep "^To: R E Cipient <rcipient@example.com>,\$" hdrs4 &&
+	test_grep "^ *S E Cipient <scipient@example.com>\$" hdrs4
 '
 
 test_expect_success 'additional command line cc (ascii)' '
 	git config --replace-all format.headers "Cc: R E Cipient <rcipient@example.com>" &&
-	git format-patch --cc="S E Cipient <scipient@example.com>" --stdout master..side >patch5 &&
+	git format-patch --cc="S E Cipient <scipient@example.com>" --stdout main..side >patch5 &&
 	sed -e "/^\$/q" patch5 >hdrs5 &&
-	grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs5 &&
-	grep "^ *S E Cipient <scipient@example.com>\$" hdrs5
+	test_grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs5 &&
+	test_grep "^ *S E Cipient <scipient@example.com>\$" hdrs5
 '
 
 test_expect_failure 'additional command line cc (rfc822)' '
 	git config --replace-all format.headers "Cc: R E Cipient <rcipient@example.com>" &&
-	git format-patch --cc="S. E. Cipient <scipient@example.com>" --stdout master..side >patch5 &&
+	git format-patch --cc="S. E. Cipient <scipient@example.com>" --stdout main..side >patch5 &&
 	sed -e "/^\$/q" patch5 >hdrs5 &&
-	grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs5 &&
-	grep "^ *\"S. E. Cipient\" <scipient@example.com>\$" hdrs5
+	test_grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs5 &&
+	test_grep "^ *\"S. E. Cipient\" <scipient@example.com>\$" hdrs5
 '
 
 test_expect_success 'command line headers' '
 	git config --unset-all format.headers &&
-	git format-patch --add-header="Cc: R E Cipient <rcipient@example.com>" --stdout master..side >patch6 &&
+	git format-patch --add-header="Cc: R E Cipient <rcipient@example.com>" --stdout main..side >patch6 &&
 	sed -e "/^\$/q" patch6 >hdrs6 &&
-	grep "^Cc: R E Cipient <rcipient@example.com>\$" hdrs6
+	test_grep "^Cc: R E Cipient <rcipient@example.com>\$" hdrs6
 '
 
 test_expect_success 'configuration headers and command line headers' '
 	git config --replace-all format.headers "Cc: R E Cipient <rcipient@example.com>" &&
-	git format-patch --add-header="Cc: S E Cipient <scipient@example.com>" --stdout master..side >patch7 &&
+	git format-patch --add-header="Cc: S E Cipient <scipient@example.com>" --stdout main..side >patch7 &&
 	sed -e "/^\$/q" patch7 >hdrs7 &&
-	grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs7 &&
-	grep "^ *S E Cipient <scipient@example.com>\$" hdrs7
+	test_grep "^Cc: R E Cipient <rcipient@example.com>,\$" hdrs7 &&
+	test_grep "^ *S E Cipient <scipient@example.com>\$" hdrs7
 '
 
 test_expect_success 'command line To: header (ascii)' '
 	git config --unset-all format.headers &&
-	git format-patch --to="R E Cipient <rcipient@example.com>" --stdout master..side >patch8 &&
+	git format-patch --to="R E Cipient <rcipient@example.com>" --stdout main..side >patch8 &&
 	sed -e "/^\$/q" patch8 >hdrs8 &&
-	grep "^To: R E Cipient <rcipient@example.com>\$" hdrs8
+	test_grep "^To: R E Cipient <rcipient@example.com>\$" hdrs8
 '
 
 test_expect_failure 'command line To: header (rfc822)' '
-	git format-patch --to="R. E. Cipient <rcipient@example.com>" --stdout master..side >patch8 &&
+	git format-patch --to="R. E. Cipient <rcipient@example.com>" --stdout main..side >patch8 &&
 	sed -e "/^\$/q" patch8 >hdrs8 &&
-	grep "^To: \"R. E. Cipient\" <rcipient@example.com>\$" hdrs8
+	test_grep "^To: \"R. E. Cipient\" <rcipient@example.com>\$" hdrs8
 '
 
 test_expect_failure 'command line To: header (rfc2047)' '
-	git format-patch --to="R Ä Cipient <rcipient@example.com>" --stdout master..side >patch8 &&
+	git format-patch --to="R Ä Cipient <rcipient@example.com>" --stdout main..side >patch8 &&
 	sed -e "/^\$/q" patch8 >hdrs8 &&
-	grep "^To: =?UTF-8?q?R=20=C3=84=20Cipient?= <rcipient@example.com>\$" hdrs8
+	test_grep "^To: =?UTF-8?q?R=20=C3=84=20Cipient?= <rcipient@example.com>\$" hdrs8
 '
 
 test_expect_success 'configuration To: header (ascii)' '
 	git config format.to "R E Cipient <rcipient@example.com>" &&
-	git format-patch --stdout master..side >patch9 &&
+	git format-patch --stdout main..side >patch9 &&
 	sed -e "/^\$/q" patch9 >hdrs9 &&
-	grep "^To: R E Cipient <rcipient@example.com>\$" hdrs9
+	test_grep "^To: R E Cipient <rcipient@example.com>\$" hdrs9
 '
 
 test_expect_failure 'configuration To: header (rfc822)' '
 	git config format.to "R. E. Cipient <rcipient@example.com>" &&
-	git format-patch --stdout master..side >patch9 &&
+	git format-patch --stdout main..side >patch9 &&
 	sed -e "/^\$/q" patch9 >hdrs9 &&
-	grep "^To: \"R. E. Cipient\" <rcipient@example.com>\$" hdrs9
+	test_grep "^To: \"R. E. Cipient\" <rcipient@example.com>\$" hdrs9
 '
 
 test_expect_failure 'configuration To: header (rfc2047)' '
 	git config format.to "R Ä Cipient <rcipient@example.com>" &&
-	git format-patch --stdout master..side >patch9 &&
+	git format-patch --stdout main..side >patch9 &&
 	sed -e "/^\$/q" patch9 >hdrs9 &&
-	grep "^To: =?UTF-8?q?R=20=C3=84=20Cipient?= <rcipient@example.com>\$" hdrs9
+	test_grep "^To: =?UTF-8?q?R=20=C3=84=20Cipient?= <rcipient@example.com>\$" hdrs9
 '
 
 # check_patch <patch>: Verify that <patch> looks like a half-sane
@@ -234,82 +247,82 @@ check_patch () {
 }
 
 test_expect_success 'format.from=false' '
-	git -c format.from=false format-patch --stdout master..side >patch &&
+	git -c format.from=false format-patch --stdout main..side >patch &&
 	sed -e "/^\$/q" patch >hdrs &&
 	check_patch patch &&
-	! grep "^From: C O Mitter <committer@example.com>\$" hdrs
+	test_grep ! "^From: C O Mitter <committer@example.com>\$" hdrs
 '
 
 test_expect_success 'format.from=true' '
-	git -c format.from=true format-patch --stdout master..side >patch &&
+	git -c format.from=true format-patch --stdout main..side >patch &&
 	sed -e "/^\$/q" patch >hdrs &&
 	check_patch hdrs &&
-	grep "^From: C O Mitter <committer@example.com>\$" hdrs
+	test_grep "^From: C O Mitter <committer@example.com>\$" hdrs
 '
 
 test_expect_success 'format.from with address' '
-	git -c format.from="F R Om <from@example.com>" format-patch --stdout master..side >patch &&
+	git -c format.from="F R Om <from@example.com>" format-patch --stdout main..side >patch &&
 	sed -e "/^\$/q" patch >hdrs &&
 	check_patch hdrs &&
-	grep "^From: F R Om <from@example.com>\$" hdrs
+	test_grep "^From: F R Om <from@example.com>\$" hdrs
 '
 
 test_expect_success '--no-from overrides format.from' '
-	git -c format.from="F R Om <from@example.com>" format-patch --no-from --stdout master..side >patch &&
+	git -c format.from="F R Om <from@example.com>" format-patch --no-from --stdout main..side >patch &&
 	sed -e "/^\$/q" patch >hdrs &&
 	check_patch hdrs &&
-	! grep "^From: F R Om <from@example.com>\$" hdrs
+	test_grep ! "^From: F R Om <from@example.com>\$" hdrs
 '
 
 test_expect_success '--from overrides format.from' '
-	git -c format.from="F R Om <from@example.com>" format-patch --from --stdout master..side >patch &&
+	git -c format.from="F R Om <from@example.com>" format-patch --from --stdout main..side >patch &&
 	sed -e "/^\$/q" patch >hdrs &&
 	check_patch hdrs &&
-	! grep "^From: F R Om <from@example.com>\$" hdrs
+	test_grep ! "^From: F R Om <from@example.com>\$" hdrs
 '
 
 test_expect_success '--no-to overrides config.to' '
 	git config --replace-all format.to \
 		"R E Cipient <rcipient@example.com>" &&
-	git format-patch --no-to --stdout master..side >patch10 &&
+	git format-patch --no-to --stdout main..side >patch10 &&
 	sed -e "/^\$/q" patch10 >hdrs10 &&
 	check_patch hdrs10 &&
-	! grep "^To: R E Cipient <rcipient@example.com>\$" hdrs10
+	test_grep ! "^To: R E Cipient <rcipient@example.com>\$" hdrs10
 '
 
 test_expect_success '--no-to and --to replaces config.to' '
 	git config --replace-all format.to \
 		"Someone <someone@out.there>" &&
 	git format-patch --no-to --to="Someone Else <else@out.there>" \
-		--stdout master..side >patch11 &&
+		--stdout main..side >patch11 &&
 	sed -e "/^\$/q" patch11 >hdrs11 &&
 	check_patch hdrs11 &&
-	! grep "^To: Someone <someone@out.there>\$" hdrs11 &&
-	grep "^To: Someone Else <else@out.there>\$" hdrs11
+	test_grep ! "^To: Someone <someone@out.there>\$" hdrs11 &&
+	test_grep "^To: Someone Else <else@out.there>\$" hdrs11
 '
 
 test_expect_success '--no-cc overrides config.cc' '
 	git config --replace-all format.cc \
 		"C E Cipient <rcipient@example.com>" &&
-	git format-patch --no-cc --stdout master..side >patch12 &&
+	git format-patch --no-cc --stdout main..side >patch12 &&
 	sed -e "/^\$/q" patch12 >hdrs12 &&
 	check_patch hdrs12 &&
-	! grep "^Cc: C E Cipient <rcipient@example.com>\$" hdrs12
+	test_grep ! "^Cc: C E Cipient <rcipient@example.com>\$" hdrs12
 '
 
 test_expect_success '--no-add-header overrides config.headers' '
 	git config --replace-all format.headers \
 		"Header1: B E Cipient <rcipient@example.com>" &&
-	git format-patch --no-add-header --stdout master..side >patch13 &&
+	git format-patch --no-add-header --stdout main..side >patch13 &&
 	sed -e "/^\$/q" patch13 >hdrs13 &&
 	check_patch hdrs13 &&
-	! grep "^Header1: B E Cipient <rcipient@example.com>\$" hdrs13
+	test_grep ! "^Header1: B E Cipient <rcipient@example.com>\$" hdrs13
 '
 
 test_expect_success 'multiple files' '
 	rm -rf patches/ &&
 	git checkout side &&
-	git format-patch -o patches/ master &&
+	git format-patch -o patches/ main &&
 	ls patches/0001-Side-changes-1.patch patches/0002-Side-changes-2.patch patches/0003-Side-changes-3-with-n-backslash-n-in-it.patch
 '
 
@@ -322,7 +335,7 @@ test_expect_success 'filename length limit' '
 		max=$(
 			for patch in 000[1-9]-*.patch
 			do
-				echo "$patch" | wc -c
+				echo "$patch" | wc -c || exit 1
 			done |
 			sort -nr |
 			head -n 1
@@ -340,7 +353,7 @@ test_expect_success 'filename length limit from config' '
 		max=$(
 			for patch in 000[1-9]-*.patch
 			do
-				echo "$patch" | wc -c
+				echo "$patch" | wc -c || exit 1
 			done |
 			sort -nr |
 			head -n 1
@@ -358,7 +371,7 @@ test_expect_success 'filename limit applies only to basename' '
 		max=$(
 			for patch in patches/000[1-9]-*.patch
 			do
-				echo "${patch#patches/}" | wc -c
+				echo "${patch#patches/}" | wc -c || exit 1
 			done |
 			sort -nr |
 			head -n 1
@@ -367,20 +380,169 @@ test_expect_success 'filename limit applies only to basename' '
 	done
 '
 
+test_expect_success 'cover letter with subject, author and count' '
+	rm -rf patches &&
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf patches test_file" &&
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	git format-patch --commit-list-format="log:[%(count)/%(total)] %s (%an)" \
+	-o patches HEAD~1 &&
+	test_grep "^\[1/1\] This is a subject (A U Thor)$" patches/0000-cover-letter.patch
+'
+
+test_expect_success 'cover letter with custom format no prefix' '
+	rm -rf patches &&
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf patches test_file" &&
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	git format-patch --commit-list-format="[%(count)/%(total)] %s (%an)" \
+	-o patches HEAD~1 &&
+	test_grep "^\[1/1\] This is a subject (A U Thor)$" patches/0000-cover-letter.patch
+'
+
+test_expect_success 'cover letter fail when no prefix and no placeholder' '
+	rm -rf patches &&
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf patches test_file err" &&
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	test_must_fail git format-patch --commit-list-format="this should fail" \
+	-o patches HEAD~1 2>err &&
+	test_grep "is not a valid format string" err
+'
+
+test_expect_success 'cover letter modern format' '
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf patches test_file" &&
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	git format-patch --commit-list-format="modern" -o patches HEAD~1 &&
+	test_grep "^\[1/1\] This is a subject$" patches/0000-cover-letter.patch
+'
+
+test_expect_success 'cover letter shortlog format' '
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf expect patches result test_file" &&
+	cat >expect <<-"EOF" &&
+	A U Thor (1):
+	  This is a subject
+	EOF
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	git format-patch --commit-list-format=shortlog -o patches HEAD~1 &&
+	grep -E -A 1 "^A U Thor \([[:digit:]]+\):$" patches/0000-cover-letter.patch >result &&
+	cat result &&
+	test_cmp expect result
+'
+
+test_expect_success 'no cover letter but with format specified' '
+	test_when_finished "git reset --hard HEAD~1" &&
+	test_when_finished "rm -rf patches result test_file" &&
+	touch test_file &&
+	git add test_file &&
+	git commit -m "This is a subject" &&
+	git format-patch --no-cover-letter --commit-list-format="[%(count)] %s" -o patches HEAD~1 &&
+	test_path_is_missing patches/0000-cover-letter.patch
+'
+
+test_expect_success 'cover letter config with count, subject and author' '
+	test_when_finished "rm -rf patches result" &&
+	test_when_finished "git config unset format.coverletter" &&
+	test_when_finished "git config unset format.commitlistformat" &&
+	git config set format.coverletter true &&
+	git config set format.commitlistformat "log:[%(count)/%(total)] %s (%an)" &&
+	git format-patch -o patches HEAD~2 &&
+	grep -E "^[[[:digit:]]+/[[:digit:]]+] .* \(A U Thor\)" patches/0000-cover-letter.patch >result &&
+	test_line_count = 2 result
+'
+
+test_expect_success 'cover letter config with count and author' '
+	test_when_finished "rm -rf patches result" &&
+	test_when_finished "git config unset format.coverletter" &&
+	test_when_finished "git config unset format.commitlistformat" &&
+	git config set format.coverletter true &&
+	git config set format.commitlistformat "log:[%(count)/%(total)] (%an)" &&
+	git format-patch -o patches HEAD~2 &&
+	grep -E "^[[[:digit:]]+/[[:digit:]]+] \(A U Thor\)" patches/0000-cover-letter.patch >result &&
+	test_line_count = 2 result
+'
+
+test_expect_success 'cover letter config commitlistformat set to modern' '
+	test_when_finished "rm -rf patches result" &&
+	test_when_finished "git config unset format.coverletter" &&
+	test_when_finished "git config unset format.commitlistformat" &&
+	git config set format.coverletter true &&
+	git config set format.commitlistformat modern &&
+	git format-patch -o patches HEAD~2 &&
+	grep -E "^[[[:digit:]]+/[[:digit:]]+] .*$" patches/0000-cover-letter.patch >result &&
+	test_line_count = 2 result
+'
+
+test_expect_success 'cover letter config commitlistformat set to shortlog' '
+	test_when_finished "rm -rf patches result" &&
+	test_when_finished "git config unset format.coverletter" &&
+	test_when_finished "git config unset format.commitlistformat" &&
+	git config set format.coverletter true &&
+	git config set format.commitlistformat shortlog &&
+	git format-patch -o patches HEAD~2 &&
+	grep -E "^A U Thor \([[:digit:]]+\)" patches/0000-cover-letter.patch >result &&
+	test_line_count = 1 result
+'
+
+test_expect_success 'cover letter config commitlistformat not set' '
+	test_when_finished "rm -rf patches result" &&
+	test_when_finished "git config unset format.coverletter" &&
+	git config set format.coverletter true &&
+	git format-patch -o patches HEAD~2 &&
+	grep -E "^A U Thor \([[:digit:]]+\)" patches/0000-cover-letter.patch >result &&
+	test_line_count = 1 result
+'
+
 test_expect_success 'reroll count' '
 	rm -fr patches &&
-	git format-patch -o patches --cover-letter --reroll-count 4 master..side >list &&
-	! grep -v "^patches/v4-000[0-3]-" list &&
+	git format-patch -o patches --cover-letter --reroll-count 4 main..side >list &&
+	test_grep ! -v "^patches/v4-000[0-3]-" list &&
 	sed -n -e "/^Subject: /p" $(cat list) >subjects &&
-	! grep -v "^Subject: \[PATCH v4 [0-3]/3\] " subjects
+	test_grep ! -v "^Subject: \[PATCH v4 [0-3]/3\] " subjects
 '
 
 test_expect_success 'reroll count (-v)' '
 	rm -fr patches &&
-	git format-patch -o patches --cover-letter -v4 master..side >list &&
-	! grep -v "^patches/v4-000[0-3]-" list &&
+	git format-patch -o patches --cover-letter -v4 main..side >list &&
+	test_grep ! -v "^patches/v4-000[0-3]-" list &&
 	sed -n -e "/^Subject: /p" $(cat list) >subjects &&
-	! grep -v "^Subject: \[PATCH v4 [0-3]/3\] " subjects
+	test_grep ! -v "^Subject: \[PATCH v4 [0-3]/3\] " subjects
+'
+
+test_expect_success 'reroll count (-v) with a fractional number' '
+	rm -fr patches &&
+	git format-patch -o patches --cover-letter -v4.4 main..side >list &&
+	test_grep ! -v "^patches/v4.4-000[0-3]-" list &&
+	sed -n -e "/^Subject: /p" $(cat list) >subjects &&
+	test_grep ! -v "^Subject: \[PATCH v4.4 [0-3]/3\] " subjects
+'
+
+test_expect_success 'reroll (-v) count with a non number' '
+	rm -fr patches &&
+	git format-patch -o patches --cover-letter -v4rev2 main..side >list &&
+	test_grep ! -v "^patches/v4rev2-000[0-3]-" list &&
+	sed -n -e "/^Subject: /p" $(cat list) >subjects &&
+	test_grep ! -v "^Subject: \[PATCH v4rev2 [0-3]/3\] " subjects
+'
+
+test_expect_success 'reroll (-v) count with a non-pathname character' '
+	rm -fr patches &&
+	git format-patch -o patches --cover-letter -v4---..././../--1/.2//  main..side >list &&
+	test_grep ! -v "patches/v4-\.-\.-\.-1-\.2-000[0-3]-" list &&
+	sed -n -e "/^Subject: /p" $(cat list) >subjects &&
+	test_grep ! -v "^Subject: \[PATCH v4---\.\.\./\./\.\./--1/\.2// [0-3]/3\] " subjects
 '
 
 check_threading () {
@@ -411,184 +573,189 @@ cat >>expect.no-threading <<EOF
 ---
 EOF
 
-test_expect_success 'no threading' '
+test_expect_success PERL_TEST_HELPERS 'no threading' '
 	git checkout side &&
-	check_threading expect.no-threading master
+	check_threading expect.no-threading main
 '
 
 cat >expect.thread <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 ---
-Message-Id: <1>
+Message-ID: <1>
 In-Reply-To: <0>
 References: <0>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <0>
 References: <0>
 EOF
 
-test_expect_success 'thread' '
-	check_threading expect.thread --thread master
+test_expect_success PERL_TEST_HELPERS 'thread' '
+	check_threading expect.thread --thread main
+'
+
+test_expect_success PERL_TEST_HELPERS '--thread overrides format.thread=deep' '
+	test_config format.thread deep &&
+	check_threading expect.thread --thread main
 '
 
 cat >expect.in-reply-to <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 In-Reply-To: <1>
 References: <1>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <1>
 References: <1>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <1>
 References: <1>
 EOF
 
-test_expect_success 'thread in-reply-to' '
+test_expect_success PERL_TEST_HELPERS 'thread in-reply-to' '
 	check_threading expect.in-reply-to --in-reply-to="<test.message>" \
-		--thread master
+		--thread main
 '
 
 cat >expect.cover-letter <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 ---
-Message-Id: <1>
+Message-ID: <1>
 In-Reply-To: <0>
 References: <0>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <0>
 References: <0>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <0>
 References: <0>
 EOF
 
-test_expect_success 'thread cover-letter' '
-	check_threading expect.cover-letter --cover-letter --thread master
+test_expect_success PERL_TEST_HELPERS 'thread cover-letter' '
+	check_threading expect.cover-letter --cover-letter --thread main
 '
 
 cat >expect.cl-irt <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 In-Reply-To: <1>
 References: <1>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <0>
 References: <1>
 	<0>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <0>
 References: <1>
 	<0>
 ---
-Message-Id: <4>
+Message-ID: <4>
 In-Reply-To: <0>
 References: <1>
 	<0>
 EOF
 
-test_expect_success 'thread cover-letter in-reply-to' '
+test_expect_success PERL_TEST_HELPERS 'thread cover-letter in-reply-to' '
 	check_threading expect.cl-irt --cover-letter \
-		--in-reply-to="<test.message>" --thread master
+		--in-reply-to="<test.message>" --thread main
 '
 
-test_expect_success 'thread explicit shallow' '
+test_expect_success PERL_TEST_HELPERS 'thread explicit shallow' '
 	check_threading expect.cl-irt --cover-letter \
-		--in-reply-to="<test.message>" --thread=shallow master
+		--in-reply-to="<test.message>" --thread=shallow main
 '
 
 cat >expect.deep <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 ---
-Message-Id: <1>
+Message-ID: <1>
 In-Reply-To: <0>
 References: <0>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <1>
 References: <0>
 	<1>
 EOF
 
-test_expect_success 'thread deep' '
-	check_threading expect.deep --thread=deep master
+test_expect_success PERL_TEST_HELPERS 'thread deep' '
+	check_threading expect.deep --thread=deep main
 '
 
 cat >expect.deep-irt <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 In-Reply-To: <1>
 References: <1>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <0>
 References: <1>
 	<0>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <2>
 References: <1>
 	<0>
 	<2>
 EOF
 
-test_expect_success 'thread deep in-reply-to' '
+test_expect_success PERL_TEST_HELPERS 'thread deep in-reply-to' '
 	check_threading expect.deep-irt  --thread=deep \
-		--in-reply-to="<test.message>" master
+		--in-reply-to="<test.message>" main
 '
 
 cat >expect.deep-cl <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 ---
-Message-Id: <1>
+Message-ID: <1>
 In-Reply-To: <0>
 References: <0>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <1>
 References: <0>
 	<1>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <2>
 References: <0>
 	<1>
 	<2>
 EOF
 
-test_expect_success 'thread deep cover-letter' '
-	check_threading expect.deep-cl --cover-letter --thread=deep master
+test_expect_success PERL_TEST_HELPERS 'thread deep cover-letter' '
+	check_threading expect.deep-cl --cover-letter --thread=deep main
 '
 
 cat >expect.deep-cl-irt <<EOF
 ---
-Message-Id: <0>
+Message-ID: <0>
 In-Reply-To: <1>
 References: <1>
 ---
-Message-Id: <2>
+Message-ID: <2>
 In-Reply-To: <0>
 References: <1>
 	<0>
 ---
-Message-Id: <3>
+Message-ID: <3>
 In-Reply-To: <2>
 References: <1>
 	<0>
 	<2>
 ---
-Message-Id: <4>
+Message-ID: <4>
 In-Reply-To: <3>
 References: <1>
 	<0>
@@ -596,29 +763,29 @@ References: <1>
 	<3>
 EOF
 
-test_expect_success 'thread deep cover-letter in-reply-to' '
+test_expect_success PERL_TEST_HELPERS 'thread deep cover-letter in-reply-to' '
 	check_threading expect.deep-cl-irt --cover-letter \
-		--in-reply-to="<test.message>" --thread=deep master
+		--in-reply-to="<test.message>" --thread=deep main
 '
 
-test_expect_success 'thread via config' '
+test_expect_success PERL_TEST_HELPERS 'thread via config' '
 	test_config format.thread true &&
-	check_threading expect.thread master
+	check_threading expect.thread main
 '
 
-test_expect_success 'thread deep via config' '
+test_expect_success PERL_TEST_HELPERS 'thread deep via config' '
 	test_config format.thread deep &&
-	check_threading expect.deep master
+	check_threading expect.deep main
 '
 
-test_expect_success 'thread config + override' '
+test_expect_success PERL_TEST_HELPERS 'thread config + override' '
 	test_config format.thread deep &&
-	check_threading expect.thread --thread master
+	check_threading expect.thread --thread main
 '
 
-test_expect_success 'thread config + --no-thread' '
+test_expect_success PERL_TEST_HELPERS 'thread config + --no-thread' '
 	test_config format.thread deep &&
-	check_threading expect.no-threading --no-thread master
+	check_threading expect.no-threading --no-thread main
 '
 
 test_expect_success 'excessive subject' '
@@ -626,12 +793,12 @@ test_expect_success 'excessive subject' '
 	git checkout side &&
 	before=$(git hash-object file) &&
 	before=$(git rev-parse --short $before) &&
-	for i in 5 6 1 2 3 A 4 B C 7 8 9 10 D E F; do echo "$i"; done >>file &&
+	test_write_lines 5 6 1 2 3 A 4 B C 7 8 9 10 D E F >>file &&
 	after=$(git hash-object file) &&
 	after=$(git rev-parse --short $after) &&
 	git update-index file &&
 	git commit -m "This is an excessively long subject line for a message due to the habit some projects have of not having a short, one-line subject at the start of the commit message, but rather sticking a whole paragraph right at the start as the only thing in the commit message. It had better not become the filename for the patch." &&
-	git format-patch -o patches/ master..side &&
+	git format-patch -o patches/ main..side &&
 	ls patches/0004-This-is-an-excessively-long-subject-line-for-a-messa.patch
 '
 
@@ -646,9 +813,9 @@ test_expect_success 'cover-letter inherits diff options' '
 	git commit -m foo &&
 	git format-patch --no-renames --cover-letter -1 &&
 	check_patch 0000-cover-letter.patch &&
-	! grep "file => foo .* 0 *\$" 0000-cover-letter.patch &&
+	test_grep ! "file => foo .* 0 *\$" 0000-cover-letter.patch &&
 	git format-patch --cover-letter -1 -M &&
-	grep "file => foo .* 0 *\$" 0000-cover-letter.patch
+	test_grep "file => foo .* 0 *\$" 0000-cover-letter.patch
 '
 
 cat >expect <<EOF
@@ -757,13 +924,13 @@ test_expect_success 'format-patch from a subdirectory (3)' '
 
 test_expect_success 'format-patch --in-reply-to' '
 	git format-patch -1 --stdout --in-reply-to "baz@foo.bar" >patch8 &&
-	grep "^In-Reply-To: <baz@foo.bar>" patch8 &&
-	grep "^References: <baz@foo.bar>" patch8
+	test_grep "^In-Reply-To: <baz@foo.bar>" patch8 &&
+	test_grep "^References: <baz@foo.bar>" patch8
 '
 
 test_expect_success 'format-patch --signoff' '
 	git format-patch -1 --signoff --stdout >out &&
-	grep "^Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>" out
+	test_grep "^Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>" out
 '
 
 test_expect_success 'format-patch --notes --signoff' '
@@ -778,105 +945,105 @@ test_expect_success 'format-patch --notes --signoff' '
 '
 
 test_expect_success 'format-patch notes output control' '
+	test_when_finished "git notes remove HEAD || :" &&
 	git notes add -m "notes config message" HEAD &&
-	test_when_finished git notes remove HEAD &&
 
 	git format-patch -1 --stdout >out &&
-	! grep "notes config message" out &&
+	test_grep ! "notes config message" out &&
 	git format-patch -1 --stdout --notes >out &&
-	grep "notes config message" out &&
+	test_grep "notes config message" out &&
 	git format-patch -1 --stdout --no-notes >out &&
-	! grep "notes config message" out &&
+	test_grep ! "notes config message" out &&
 	git format-patch -1 --stdout --notes --no-notes >out &&
-	! grep "notes config message" out &&
+	test_grep ! "notes config message" out &&
 	git format-patch -1 --stdout --no-notes --notes >out &&
-	grep "notes config message" out &&
+	test_grep "notes config message" out &&
 
 	test_config format.notes true &&
 	git format-patch -1 --stdout >out &&
-	grep "notes config message" out &&
+	test_grep "notes config message" out &&
 	git format-patch -1 --stdout --notes >out &&
-	grep "notes config message" out &&
+	test_grep "notes config message" out &&
 	git format-patch -1 --stdout --no-notes >out &&
-	! grep "notes config message" out &&
+	test_grep ! "notes config message" out &&
 	git format-patch -1 --stdout --notes --no-notes >out &&
-	! grep "notes config message" out &&
+	test_grep ! "notes config message" out &&
 	git format-patch -1 --stdout --no-notes --notes >out &&
-	grep "notes config message" out
+	test_grep "notes config message" out
 '
 
 test_expect_success 'format-patch with multiple notes refs' '
+	test_when_finished "git notes --ref note1 remove HEAD;
+			    git notes --ref note2 remove HEAD || :" &&
 	git notes --ref note1 add -m "this is note 1" HEAD &&
-	test_when_finished git notes --ref note1 remove HEAD &&
 	git notes --ref note2 add -m "this is note 2" HEAD &&
-	test_when_finished git notes --ref note2 remove HEAD &&
 
 	git format-patch -1 --stdout >out &&
-	! grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git format-patch -1 --stdout --notes=note1 >out &&
-	grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git format-patch -1 --stdout --notes=note2 >out &&
-	! grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep "this is note 2" out &&
 	git format-patch -1 --stdout --notes=note1 --notes=note2 >out &&
-	grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep "this is note 2" out &&
 
 	test_config format.notes note1 &&
 	git format-patch -1 --stdout >out &&
-	grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git format-patch -1 --stdout --no-notes >out &&
-	! grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git format-patch -1 --stdout --notes=note2 >out &&
-	grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep "this is note 2" out &&
 	git format-patch -1 --stdout --no-notes --notes=note2 >out &&
-	! grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep "this is note 2" out &&
 
 	git config --add format.notes note2 &&
 	git format-patch -1 --stdout >out &&
-	grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep "this is note 2" out &&
 	git format-patch -1 --stdout --no-notes >out &&
-	! grep "this is note 1" out &&
-	! grep "this is note 2" out
+	test_grep ! "this is note 1" out &&
+	test_grep ! "this is note 2" out
 '
 
 test_expect_success 'format-patch with multiple notes refs in config' '
 	test_when_finished "test_unconfig format.notes" &&
 
+	test_when_finished "git notes --ref note1 remove HEAD;
+			    git notes --ref note2 remove HEAD || :" &&
 	git notes --ref note1 add -m "this is note 1" HEAD &&
-	test_when_finished git notes --ref note1 remove HEAD &&
 	git notes --ref note2 add -m "this is note 2" HEAD &&
-	test_when_finished git notes --ref note2 remove HEAD &&
 
 	git config format.notes note1 &&
 	git format-patch -1 --stdout >out &&
-	grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git config format.notes note2 &&
 	git format-patch -1 --stdout >out &&
-	! grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep "this is note 2" out &&
 	git config --add format.notes note1 &&
 	git format-patch -1 --stdout >out &&
-	grep "this is note 1" out &&
-	grep "this is note 2" out &&
+	test_grep "this is note 1" out &&
+	test_grep "this is note 2" out &&
 
 	git config --replace-all format.notes note1 &&
 	git config --add format.notes false &&
 	git format-patch -1 --stdout >out &&
-	! grep "this is note 1" out &&
-	! grep "this is note 2" out &&
+	test_grep ! "this is note 1" out &&
+	test_grep ! "this is note 2" out &&
 	git config --add format.notes note2 &&
 	git format-patch -1 --stdout >out &&
-	! grep "this is note 1" out &&
-	grep "this is note 2" out
+	test_grep ! "this is note 1" out &&
+	test_grep "this is note 2" out
 '
 
 echo "fatal: --name-only does not make sense" >expect.name-only
@@ -885,31 +1052,60 @@ echo "fatal: --check does not make sense" >expect.check
 
 test_expect_success 'options no longer allowed for format-patch' '
 	test_must_fail git format-patch --name-only 2>output &&
-	test_i18ncmp expect.name-only output &&
+	test_cmp expect.name-only output &&
 	test_must_fail git format-patch --name-status 2>output &&
-	test_i18ncmp expect.name-status output &&
+	test_cmp expect.name-status output &&
 	test_must_fail git format-patch --check 2>output &&
-	test_i18ncmp expect.check output
+	test_cmp expect.check output
 '
 
 test_expect_success 'format-patch --numstat should produce a patch' '
-	git format-patch --numstat --stdout master..side >output &&
+	git format-patch --numstat --stdout main..side >output &&
 	grep "^diff --git a/" output >diff &&
 	test_line_count = 5 diff
 '
 
 test_expect_success 'format-patch -- <path>' '
-	git format-patch master..side -- file 2>error &&
-	! grep "Use .--" error
+	rm -f *.patch &&
+	git checkout -b pathspec main &&
+
+	echo file_a 1 >file_a &&
+	echo file_b 1 >file_b &&
+	git add file_a file_b &&
+	git commit -m pathspec_initial &&
+
+	echo file_a 2 >>file_a &&
+	git add file_a &&
+	git commit -m pathspec_a &&
+
+	echo file_b 2 >>file_b &&
+	git add file_b &&
+	git commit -m pathspec_b &&
+
+	echo file_a 3 >>file_a &&
+	echo file_b 3 >>file_b &&
+	git add file_a file_b &&
+	git commit -m pathspec_ab &&
+
+	cat >expect <<-\EOF &&
+	0001-pathspec_initial.patch
+	0002-pathspec_a.patch
+	0003-pathspec_ab.patch
+	EOF
+
+	git format-patch main..pathspec -- file_a >output &&
+	test_cmp expect output &&
+	test_grep ! file_b *.patch
 '
 
 test_expect_success 'format-patch --ignore-if-in-upstream HEAD' '
+	git checkout side &&
 	git format-patch --ignore-if-in-upstream HEAD
 '
 
 test_expect_success 'get git version' '
 	git_version=$(git --version) &&
-	git_version=${git_version##* }
+	git_version=${git_version#git version }
 '
 
 signature() {
@@ -933,14 +1129,14 @@ test_expect_success 'format-patch --signature' '
 test_expect_success 'format-patch with format.signature config' '
 	git config format.signature "config sig" &&
 	git format-patch --stdout -1 >output &&
-	grep "config sig" output
+	test_grep "config sig" output
 '
 
 test_expect_success 'format-patch --signature overrides format.signature' '
 	git config format.signature "config sig" &&
 	git format-patch --stdout --signature="overrides" -1 >output &&
-	! grep "config sig" output &&
-	grep "overrides" output
+	test_grep ! "config sig" output &&
+	test_grep "overrides" output
 '
 
 test_expect_success 'format-patch --no-signature ignores format.signature' '
@@ -948,9 +1144,9 @@ test_expect_success 'format-patch --no-signature ignores format.signature' '
 	git format-patch --stdout --signature="my sig" --no-signature \
 		-1 >output &&
 	check_patch output &&
-	! grep "config sig" output &&
-	! grep "my sig" output &&
-	! grep "^-- \$" output
+	test_grep ! "config sig" output &&
+	test_grep ! "my sig" output &&
+	test_grep ! "^-- \$" output
 '
 
 test_expect_success 'format-patch --signature --cover-letter' '
@@ -965,20 +1161,20 @@ test_expect_success 'format.signature="" suppresses signatures' '
 	git config format.signature "" &&
 	git format-patch --stdout -1 >output &&
 	check_patch output &&
-	! grep "^-- \$" output
+	test_grep ! "^-- \$" output
 '
 
 test_expect_success 'format-patch --no-signature suppresses signatures' '
 	git config --unset-all format.signature &&
 	git format-patch --stdout --no-signature -1 >output &&
 	check_patch output &&
-	! grep "^-- \$" output
+	test_grep ! "^-- \$" output
 '
 
 test_expect_success 'format-patch --signature="" suppresses signatures' '
 	git format-patch --stdout --signature="" -1 >output &&
 	check_patch output &&
-	! grep "^-- \$" output
+	test_grep ! "^-- \$" output
 '
 
 test_expect_success 'prepare mail-signature input' '
@@ -1017,7 +1213,7 @@ test_expect_success '--no-signature suppresses format.signaturefile ' '
 	test_config format.signaturefile mail-signature &&
 	git format-patch --stdout --no-signature -1 >output &&
 	check_patch output &&
-	! grep "^-- \$" output
+	test_grep ! "^-- \$" output
 '
 
 test_expect_success '--signature-file overrides format.signaturefile' '
@@ -1039,7 +1235,7 @@ test_expect_success '--signature overrides format.signaturefile' '
 	test_config format.signaturefile mail-signature &&
 	git format-patch --stdout --signature="my sig" -1 >output &&
 	check_patch output &&
-	grep "my sig" output
+	test_grep "my sig" output
 '
 
 test_expect_success TTY 'format-patch --stdout paginates' '
@@ -1059,7 +1255,7 @@ test_expect_success TTY 'format-patch --stdout paginates' '
 test_expect_success 'format-patch handles multi-line subjects' '
 	rm -rf patches/ &&
 	echo content >>file &&
-	for i in one two three; do echo $i; done >msg &&
+	test_write_lines one two three >msg &&
 	git add file &&
 	git commit -F msg &&
 	git format-patch -o patches -1 &&
@@ -1071,7 +1267,7 @@ test_expect_success 'format-patch handles multi-line subjects' '
 test_expect_success 'format-patch handles multi-line encoded subjects' '
 	rm -rf patches/ &&
 	echo content >>file &&
-	for i in en två tre; do echo $i; done >msg &&
+	test_write_lines en två tre >msg &&
 	git add file &&
 	git commit -F msg &&
 	git format-patch -o patches -1 &&
@@ -1214,7 +1410,9 @@ test_expect_success 'format-patch wraps extremely long from-header (rfc2047)' '
 	check_author "Foö Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar"
 '
 
-cat >expect <<'EOF'
+# NOTE: do not quote this heredoc, Dash 0.5.13 has a bug with heredocs
+# that contain multibyte chars.
+cat >expect <<EOF
 From: Foö Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar
  Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo Bar Foo
  Bar Foo Bar Foo Bar Foo Bar <author@example.com>
@@ -1229,7 +1427,9 @@ test_expect_success 'format-patch wraps extremely long from-header (non-ASCII wi
 	test_cmp expect actual
 '
 
-cat >expect <<'EOF'
+# NOTE: do not quote this heredoc, Dash 0.5.13 has a bug with heredocs
+# that contain multibyte chars.
+cat >expect <<EOF
 Subject: [PATCH] Foö
 EOF
 test_expect_success 'subject lines are unencoded with --no-encode-email-headers' '
@@ -1241,7 +1441,9 @@ test_expect_success 'subject lines are unencoded with --no-encode-email-headers'
 	test_cmp expect actual
 '
 
-cat >expect <<'EOF'
+# NOTE: do not quote this heredoc, Dash 0.5.13 has a bug with heredocs
+# that contain multibyte chars.
+cat >expect <<EOF
 Subject: [PATCH] Foö
 EOF
 test_expect_success 'subject lines are unencoded with format.encodeEmailHeaders=false' '
@@ -1297,13 +1499,80 @@ test_expect_success 'empty subject prefix does not have extra space' '
 	test_cmp expect actual
 '
 
-test_expect_success '--rfc' '
+test_expect_success '--rfc and --no-rfc' '
 	cat >expect <<-\EOF &&
 	Subject: [RFC PATCH 1/1] header with . in it
 	EOF
 	git format-patch -n -1 --stdout --rfc >patch &&
-	grep ^Subject: patch >actual &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect actual &&
+	git format-patch -n -1 --stdout --rfc --no-rfc >patch &&
+	sed -e "s/RFC //" expect >expect-raw &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect-raw actual
+'
+
+test_expect_success '--rfc=WIP and --rfc=' '
+	cat >expect <<-\EOF &&
+	Subject: [WIP PATCH 1/1] header with . in it
+	EOF
+	git format-patch -n -1 --stdout --rfc=WIP >patch &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect actual &&
+	git format-patch -n -1 --stdout --rfc --rfc= >patch &&
+	sed -e "s/WIP //" expect >expect-raw &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect-raw actual
+'
+
+test_expect_success '--rfc=-(WIP) appends' '
+	cat >expect <<-\EOF &&
+	Subject: [PATCH (WIP) 1/1] header with . in it
+	EOF
+	git format-patch -n -1 --stdout --rfc="-(WIP)" >patch &&
+	grep "^Subject:" patch >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success '--rfc does not overwrite prefix' '
+	cat >expect <<-\EOF &&
+	Subject: [RFC PATCH foobar 1/1] header with . in it
+	EOF
+	git -c format.subjectPrefix="PATCH foobar" \
+		format-patch -n -1 --stdout --rfc >patch &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--rfc is argument order independent' '
+	cat >expect <<-\EOF &&
+	Subject: [RFC PATCH foobar 1/1] header with . in it
+	EOF
+	git format-patch -n -1 --stdout --rfc \
+		--subject-prefix="PATCH foobar" >patch &&
+	grep "^Subject:" patch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--subject-prefix="<non-empty>" and -k cannot be used together' '
+	echo "fatal: options '\''--subject-prefix/--rfc'\'' and '\''-k'\'' cannot be used together" >expect.err &&
+	test_must_fail git format-patch -1 --stdout --subject-prefix="MYPREFIX" -k >actual.out 2>actual.err &&
+	test_must_be_empty actual.out &&
+	test_cmp expect.err actual.err
+'
+
+test_expect_success '--subject-prefix="" and -k cannot be used together' '
+	echo "fatal: options '\''--subject-prefix/--rfc'\'' and '\''-k'\'' cannot be used together" >expect.err &&
+	test_must_fail git format-patch -1 --stdout --subject-prefix="" -k >actual.out 2>actual.err &&
+	test_must_be_empty actual.out &&
+	test_cmp expect.err actual.err
+'
+
+test_expect_success '--rfc and -k cannot be used together' '
+	echo "fatal: options '\''--subject-prefix/--rfc'\'' and '\''-k'\'' cannot be used together" >expect.err &&
+	test_must_fail git format-patch -1 --stdout --rfc -k >actual.out 2>actual.err &&
+	test_must_be_empty actual.out &&
+	test_cmp expect.err actual.err
 '
 
 test_expect_success '--from=ident notices bogus ident' '
@@ -1334,8 +1603,53 @@ test_expect_success '--from uses committer ident' '
 	test_cmp expect patch.head
 '
 
+test_expect_success '--from applies to cover letter' '
+	test_when_finished "rm -rf patches" &&
+	git format-patch -1 --cover-letter --from="Foo Bar <author@example.com>" -o patches &&
+	echo "From: Foo Bar <author@example.com>" >expect &&
+	grep "^From:" patches/0000-cover-letter.patch >patch.head &&
+	test_cmp expect patch.head
+'
+
 test_expect_success '--from omits redundant in-body header' '
 	git format-patch -1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'with --force-in-body-from, redundant in-body from is kept' '
+	git format-patch --force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch --no-force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
 	cat >expect <<-\EOF &&
 	From: A U Thor <author@example.com>
 
@@ -1348,7 +1662,9 @@ test_expect_success 'in-body headers trigger content encoding' '
 	test_env GIT_AUTHOR_NAME="éxötìc" test_commit exotic &&
 	test_when_finished "git reset --hard HEAD^" &&
 	git format-patch -1 --stdout --from >patch &&
-	cat >expect <<-\EOF &&
+	# NOTE: do not quote this heredoc, Dash 0.5.13 has a bug with heredocs
+	# that contain multibyte chars.
+	cat >expect <<-EOF &&
 	From: C O Mitter <committer@example.com>
 	Content-Type: text/plain; charset=UTF-8
 
@@ -1364,7 +1680,7 @@ append_signoff()
 	C=$(git commit-tree HEAD^^{tree} -p HEAD) &&
 	git format-patch --stdout --signoff $C^..$C >append_signoff.patch &&
 	sed -n -e "1,/^---$/p" append_signoff.patch |
-		egrep -n "^Subject|Sign|^$"
+		grep -E -n "^Subject|Sign|^$"
 }
 
 test_expect_success 'signoff: commit with no body' '
@@ -1673,9 +1989,9 @@ test_expect_success 'cover letter with invalid --cover-from-description and conf
 	test_config branch.rebuild-1.description "config subject
 
 body" &&
-	test_must_fail git format-patch --cover-letter --cover-from-description garbage master &&
+	test_must_fail git format-patch --cover-letter --cover-from-description garbage main &&
 	test_config format.coverFromDescription garbage &&
-	test_must_fail git format-patch --cover-letter master
+	test_must_fail git format-patch --cover-letter main
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = default' '
@@ -1684,11 +2000,11 @@ test_expect_success 'cover letter with format.coverFromDescription = default' '
 body" &&
 	test_config format.coverFromDescription default &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description default' '
@@ -1696,11 +2012,11 @@ test_expect_success 'cover letter with --cover-from-description default' '
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description default master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description default main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = none' '
@@ -1709,11 +2025,11 @@ test_expect_success 'cover letter with format.coverFromDescription = none' '
 body" &&
 	test_config format.coverFromDescription none &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	! grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep ! "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description none' '
@@ -1721,11 +2037,11 @@ test_expect_success 'cover letter with --cover-from-description none' '
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description none master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	! grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description none main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep ! "^body$" actual
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = message' '
@@ -1734,11 +2050,11 @@ test_expect_success 'cover letter with format.coverFromDescription = message' '
 body" &&
 	test_config format.coverFromDescription message &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description message' '
@@ -1746,11 +2062,11 @@ test_expect_success 'cover letter with --cover-from-description message' '
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description message master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description message main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = subject' '
@@ -1759,11 +2075,11 @@ test_expect_success 'cover letter with format.coverFromDescription = subject' '
 body" &&
 	test_config format.coverFromDescription subject &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description subject' '
@@ -1771,11 +2087,21 @@ test_expect_success 'cover letter with --cover-from-description subject' '
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description subject master >actual &&
-	grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description subject main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep "^body$" actual
+'
+
+test_expect_success 'cover letter with --cover-from-description subject (UTF-8 subject line)' '
+	test_config branch.rebuild-1.description "Café?
+
+body" &&
+	git checkout rebuild-1 &&
+	git format-patch --stdout --cover-letter --cover-from-description subject --encode-email-headers main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] =?UTF-8?q?Caf=C3=A9=3F?=$" actual &&
+	test_grep ! "Café" actual
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = auto (short subject line)' '
@@ -1784,11 +2110,11 @@ test_expect_success 'cover letter with format.coverFromDescription = auto (short
 body" &&
 	test_config format.coverFromDescription auto &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description auto (short subject line)' '
@@ -1796,11 +2122,11 @@ test_expect_success 'cover letter with --cover-from-description auto (short subj
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description auto master >actual &&
-	grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description auto main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with format.coverFromDescription = auto (long subject line)' '
@@ -1809,11 +2135,11 @@ test_expect_success 'cover letter with format.coverFromDescription = auto (long 
 body" &&
 	test_config format.coverFromDescription auto &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^this is a really long first line and it is over 100 characters long which is the threshold for long subjects$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^this is a really long first line and it is over 100 characters long which is the threshold for long subjects$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with --cover-from-description auto (long subject line)' '
@@ -1821,11 +2147,11 @@ test_expect_success 'cover letter with --cover-from-description auto (long subje
 
 body" &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description auto master >actual &&
-	grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	grep "^this is a really long first line and it is over 100 characters long which is the threshold for long subjects$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description auto main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] \*\*\* SUBJECT HERE \*\*\*$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep "^this is a really long first line and it is over 100 characters long which is the threshold for long subjects$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter with command-line --cover-from-description overrides config' '
@@ -1834,53 +2160,67 @@ test_expect_success 'cover letter with command-line --cover-from-description ove
 body" &&
 	test_config format.coverFromDescription none &&
 	git checkout rebuild-1 &&
-	git format-patch --stdout --cover-letter --cover-from-description subject master >actual &&
-	grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
-	! grep "^\*\*\* BLURB HERE \*\*\*$" actual &&
-	! grep "^config subject$" actual &&
-	grep "^body$" actual
+	git format-patch --stdout --cover-letter --cover-from-description subject main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] config subject$" actual &&
+	test_grep ! "^\*\*\* BLURB HERE \*\*\*$" actual &&
+	test_grep ! "^config subject$" actual &&
+	test_grep "^body$" actual
 '
 
 test_expect_success 'cover letter using branch description (1)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
-	git format-patch --stdout --cover-letter master >actual &&
-	grep hello actual
+	git format-patch --stdout --cover-letter main >actual &&
+	test_grep hello actual
 '
 
 test_expect_success 'cover letter using branch description (2)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
 	git format-patch --stdout --cover-letter rebuild-1~2..rebuild-1 >actual &&
-	grep hello actual
+	test_grep hello actual
 '
 
 test_expect_success 'cover letter using branch description (3)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
-	git format-patch --stdout --cover-letter ^master rebuild-1 >actual &&
-	grep hello actual
+	git format-patch --stdout --cover-letter ^main rebuild-1 >actual &&
+	test_grep hello actual
 '
 
 test_expect_success 'cover letter using branch description (4)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
-	git format-patch --stdout --cover-letter master.. >actual &&
-	grep hello actual
+	git format-patch --stdout --cover-letter main.. >actual &&
+	test_grep hello actual
 '
 
 test_expect_success 'cover letter using branch description (5)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
 	git format-patch --stdout --cover-letter -2 HEAD >actual &&
-	grep hello actual
+	test_grep hello actual
 '
 
 test_expect_success 'cover letter using branch description (6)' '
 	git checkout rebuild-1 &&
 	test_config branch.rebuild-1.description hello &&
 	git format-patch --stdout --cover-letter -2 >actual &&
-	grep hello actual
+	test_grep hello actual
+'
+
+test_expect_success 'cover letter with --description-file' '
+	test_when_finished "rm -f description.txt" &&
+	cat >description.txt <<-\EOF &&
+	subject from file
+
+	body from file
+	EOF
+	git checkout rebuild-1 &&
+	git format-patch --stdout --cover-letter --cover-from-description auto \
+		--description-file description.txt main >actual &&
+	test_grep "^Subject: \[PATCH 0/2\] subject from file$" actual &&
+	test_grep "^body from file$" actual
 '
 
 test_expect_success 'cover letter with nothing' '
@@ -1932,8 +2272,8 @@ test_expect_success 'From line has expected format' '
 
 test_expect_success 'format-patch -o with no leading directories' '
 	rm -fr patches &&
-	git format-patch -o patches master..side &&
-	count=$(git rev-list --count master..side) &&
+	git format-patch -o patches main..side &&
+	count=$(git rev-list --count main..side) &&
 	ls patches >list &&
 	test_line_count = $count list
 '
@@ -1941,16 +2281,16 @@ test_expect_success 'format-patch -o with no leading directories' '
 test_expect_success 'format-patch -o with leading existing directories' '
 	rm -rf existing-dir &&
 	mkdir existing-dir &&
-	git format-patch -o existing-dir/patches master..side &&
-	count=$(git rev-list --count master..side) &&
+	git format-patch -o existing-dir/patches main..side &&
+	count=$(git rev-list --count main..side) &&
 	ls existing-dir/patches >list &&
 	test_line_count = $count list
 '
 
 test_expect_success 'format-patch -o with leading non-existing directories' '
 	rm -rf non-existing-dir &&
-	git format-patch -o non-existing-dir/patches master..side &&
-	count=$(git rev-list --count master..side) &&
+	git format-patch -o non-existing-dir/patches main..side &&
+	count=$(git rev-list --count main..side) &&
 	test_path_is_dir non-existing-dir &&
 	ls non-existing-dir/patches >list &&
 	test_line_count = $count list
@@ -1959,8 +2299,8 @@ test_expect_success 'format-patch -o with leading non-existing directories' '
 test_expect_success 'format-patch format.outputDirectory option' '
 	test_config format.outputDirectory patches &&
 	rm -fr patches &&
-	git format-patch master..side &&
-	count=$(git rev-list --count master..side) &&
+	git format-patch main..side &&
+	count=$(git rev-list --count main..side) &&
 	ls patches >list &&
 	test_line_count = $count list
 '
@@ -1968,7 +2308,7 @@ test_expect_success 'format-patch format.outputDirectory option' '
 test_expect_success 'format-patch -o overrides format.outputDirectory' '
 	test_config format.outputDirectory patches &&
 	rm -fr patches patchset &&
-	git format-patch master..side -o patchset &&
+	git format-patch main..side -o patchset &&
 	test_path_is_missing patches &&
 	test_path_is_dir patchset
 '
@@ -2065,14 +2405,14 @@ test_expect_success 'format-patch --base errors out when base commit is not ance
 	#	  ------------W
 	#
 	# If "format-patch Z..X" is given, P and Z can not be specified as the base commit
-	git checkout -b topic1 master &&
+	git checkout -b topic1 main &&
 	git rev-parse HEAD >commit-id-base &&
 	test_commit P &&
 	git rev-parse HEAD >commit-id-P &&
 	test_commit Z &&
 	git rev-parse HEAD >commit-id-Z &&
 	test_commit Y &&
-	git checkout -b topic2 master &&
+	git checkout -b topic2 main &&
 	test_commit W &&
 	git merge topic1 &&
 	test_commit X &&
@@ -2085,7 +2425,7 @@ test_expect_success 'format-patch --base errors out when base commit is not ance
 '
 
 test_expect_success 'format-patch --base=auto' '
-	git checkout -b upstream master &&
+	git checkout -b upstream main &&
 	git checkout -b local upstream &&
 	git branch --set-upstream-to=upstream &&
 	test_commit N1 &&
@@ -2106,11 +2446,11 @@ test_expect_success 'format-patch errors out when history involves criss-cross' 
 	#  \ / \
 	#   C---M2---E
 	#
-	git checkout master &&
+	git checkout main &&
 	test_commit A &&
-	git checkout -b xb master &&
+	git checkout -b xb main &&
 	test_commit B &&
-	git checkout -b xc master &&
+	git checkout -b xc main &&
 	test_commit C &&
 	git checkout -b xbc xb -- &&
 	git merge xc &&
@@ -2127,7 +2467,7 @@ test_expect_success 'format-patch errors out when history involves criss-cross' 
 test_expect_success 'format-patch format.useAutoBase whenAble history involves criss-cross' '
 	test_config format.useAutoBase whenAble &&
 	git format-patch -1 >patch &&
-	! grep "^base-commit:" patch
+	test_grep ! "^base-commit:" patch
 '
 
 test_expect_success 'format-patch format.useAutoBase option' '
@@ -2162,13 +2502,13 @@ test_expect_success 'format-patch --base overrides format.useAutoBase' '
 test_expect_success 'format-patch --no-base overrides format.useAutoBase' '
 	test_config format.useAutoBase true &&
 	git format-patch --stdout --no-base -1 >patch &&
-	! grep "^base-commit:" patch
+	test_grep ! "^base-commit:" patch
 '
 
 test_expect_success 'format-patch --no-base overrides format.useAutoBase whenAble' '
 	test_config format.useAutoBase whenAble &&
 	git format-patch --stdout --no-base -1 >patch &&
-	! grep "^base-commit:" patch
+	test_grep ! "^base-commit:" patch
 '
 
 test_expect_success 'format-patch --base with --attach' '
@@ -2181,14 +2521,32 @@ test_expect_success 'format-patch --base with --attach' '
 test_expect_success 'format-patch --attach cover-letter only is non-multipart' '
 	test_when_finished "rm -fr patches" &&
 	git format-patch -o patches --cover-letter --attach=mimemime --base=HEAD~ -1 &&
-	! egrep "^--+mimemime" patches/0000*.patch &&
-	egrep "^--+mimemime$" patches/0001*.patch >output &&
+	test_grep ! -E "^--+mimemime" patches/0000*.patch &&
+	grep -E "^--+mimemime$" patches/0001*.patch >output &&
 	test_line_count = 2 output &&
-	egrep "^--+mimemime--$" patches/0001*.patch >output &&
+	grep -E "^--+mimemime--$" patches/0001*.patch >output &&
 	test_line_count = 1 output
 '
 
-test_expect_success 'format-patch --pretty=mboxrd' '
+test_expect_success 'format-patch with format.attach' '
+	test_when_finished "rm -fr patches" &&
+	separator=attachment-separator &&
+	test_config format.attach "$separator" &&
+	filename=$(git format-patch -o patches -1) &&
+	test_grep "^Content-Type: multipart/.*$separator" "$filename"
+'
+
+test_expect_success 'format-patch with format.attach=disabled' '
+	test_when_finished "rm -fr patches" &&
+	separator=attachment-separator &&
+	test_config_global format.attach "$separator" &&
+	test_config format.attach "" &&
+	filename=$(git format-patch -o patches -1) &&
+	# The output should not even declare content type for text/plain.
+	test_grep ! "^Content-Type: multipart/" "$filename"
+'
+
+test_expect_success '-c format.mboxrd format-patch' '
 	sp=" " &&
 	cat >msg <<-INPUT_END &&
 	mboxrd should escape the body
@@ -2223,14 +2581,16 @@ test_expect_success 'format-patch --pretty=mboxrd' '
 	INPUT_END
 
 	C=$(git commit-tree HEAD^^{tree} -p HEAD <msg) &&
-	git format-patch --pretty=mboxrd --stdout -1 $C~1..$C >patch &&
+	git -c format.mboxrd format-patch --stdout -1 $C~1..$C >patch &&
+	git format-patch --pretty=mboxrd --stdout -1 $C~1..$C >compat &&
+	test_cmp patch compat &&
 	git grep -h --no-index -A11 \
 		"^>From could trip up a loose mbox parser" patch >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'interdiff: setup' '
-	git checkout -b boop master &&
+	git checkout -b boop main &&
 	test_commit fnorp blorp &&
 	test_commit fleep blorp
 '
@@ -2241,25 +2601,106 @@ test_expect_success 'interdiff: cover-letter' '
 	--q
 	EOF
 	git format-patch --cover-letter --interdiff=boop~2 -1 boop &&
-	test_i18ngrep "^Interdiff:$" 0000-cover-letter.patch &&
-	test_i18ngrep ! "^Interdiff:$" 0001-fleep.patch &&
+	test_grep "^Interdiff:$" 0000-cover-letter.patch &&
+	test_grep ! "^Interdiff:$" 0001-fleep.patch &&
 	sed "1,/^@@ /d; /^-- $/q" 0000-cover-letter.patch >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'interdiff: reroll-count' '
 	git format-patch --cover-letter --interdiff=boop~2 -v2 -1 boop &&
-	test_i18ngrep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
+	test_grep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
+'
+
+test_expect_success 'interdiff: reroll-count with a non-integer' '
+	git format-patch --cover-letter --interdiff=boop~2 -v2.2 -1 boop &&
+	test_grep "^Interdiff:$" v2.2-0000-cover-letter.patch
+'
+
+test_expect_success 'interdiff: reroll-count with a integer' '
+	git format-patch --cover-letter --interdiff=boop~2 -v2 -1 boop &&
+	test_grep "^Interdiff ..* v1:$" v2-0000-cover-letter.patch
 '
 
 test_expect_success 'interdiff: solo-patch' '
-	cat >expect <<-\EOF &&
-	  +fleep
-
-	EOF
 	git format-patch --interdiff=boop~2 -1 boop &&
-	test_i18ngrep "^Interdiff:$" 0001-fleep.patch &&
-	sed "1,/^  @@ /d; /^$/q" 0001-fleep.patch >actual &&
+
+	# remove up to the last "patch" output line,
+	# and remove everything below the signature mark.
+	sed -e "1,/^+fleep\$/d" -e "/^-- /,\$d" 0001-fleep.patch >actual &&
+
+	# fabricate Interdiff output.
+	git diff boop~2 boop >inter &&
+	{
+		echo &&
+		echo "Interdiff:" &&
+		sed -e "s/^/  /" inter
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'range-diff: solo-patch' '
+	git format-patch --creation-factor=999 \
+		--range-diff=boop~2..boop~1 -1 boop &&
+
+	# remove up to the last "patch" output line,
+	# and remove everything below the signature mark.
+	sed -e "1,/^+fleep\$/d" -e "/^-- /,\$d" 0001-fleep.patch >actual &&
+
+	# fabricate range-diff output.
+	{
+		echo &&
+		echo "Range-diff:" &&
+		git range-diff --creation-factor=999 \
+			boop~2..boop~1 boop~1..boop
+	} >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'interdiff: multi-patch, implicit --cover-letter' '
+	test_when_finished "rm -f v23-0*.patch" &&
+	git format-patch --interdiff=boop~2 -2 -v23 &&
+	test_grep "^Interdiff against v22:$" v23-0000-cover-letter.patch &&
+	test_cmp expect actual
+'
+
+test_expect_success 'interdiff: explicit --no-cover-letter defeats implied --cover-letter' '
+	test_when_finished "rm -f v23-0*.patch" &&
+	test_must_fail git format-patch --no-cover-letter \
+		--interdiff=boop~2 -2 -v23 &&
+	test_must_fail git -c format.coverLetter=no format-patch \
+		--interdiff=boop~2 -2 -v23
+'
+
+test_expect_success 'format-patch does not respect diff.noprefix' '
+	git -c diff.noprefix format-patch -1 --stdout >actual &&
+	test_grep "^--- a/blorp" actual
+'
+
+test_expect_success 'format-patch respects format.noprefix' '
+	git -c format.noprefix format-patch -1 --stdout >actual &&
+	test_grep "^--- blorp" actual
+'
+
+test_expect_success 'format.noprefix=false' '
+	git -c format.noprefix=false format-patch -1 --stdout >actual &&
+	test_grep "^--- a/blorp" actual
+'
+
+test_expect_success 'format-patch --default-prefix overrides format.noprefix' '
+	git -c format.noprefix \
+		format-patch -1 --default-prefix --stdout >actual &&
+	test_grep "^--- a/blorp" actual
+'
+
+test_expect_success 'errors on format.noprefix which is not boolean' '
+	cat >expect <<-EOF &&
+	fatal: bad boolean config value ${SQ}not-a-bool${SQ} for ${SQ}format.noprefix${SQ}
+	hint: ${SQ}format.noprefix${SQ} used to accept any value and treat that as ${SQ}true${SQ}.
+	hint: Now it only accepts boolean values, like what ${SQ}diff.noprefix${SQ} does.
+	EOF
+	test_must_fail git -c format.noprefix=not-a-bool \
+		format-patch -1 --stdout 2>actual &&
 	test_cmp expect actual
 '
 

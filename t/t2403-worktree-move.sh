@@ -75,8 +75,8 @@ test_expect_success 'move worktree' '
 	git worktree move source destination &&
 	test_path_is_missing source &&
 	git worktree list --porcelain >out &&
-	grep "^worktree.*/destination$" out &&
-	! grep "^worktree.*/source$" out &&
+	test_grep "^worktree.*/destination$" out &&
+	test_grep ! "^worktree.*/source$" out &&
 	git -C destination log --format=%s >actual2 &&
 	echo init >expected2 &&
 	test_cmp expected2 actual2
@@ -92,7 +92,7 @@ test_expect_success 'move worktree to another dir' '
 	test_when_finished "git worktree move some-dir/destination destination" &&
 	test_path_is_missing destination &&
 	git worktree list --porcelain >out &&
-	grep "^worktree.*/some-dir/destination$" out &&
+	test_grep "^worktree.*/some-dir/destination$" out &&
 	git -C some-dir/destination log --format=%s >actual2 &&
 	echo init >expected2 &&
 	test_cmp expected2 actual2
@@ -138,7 +138,8 @@ test_expect_success 'move a repo with uninitialized submodule' '
 	(
 		cd withsub &&
 		test_commit initial &&
-		git submodule add "$PWD"/.git sub &&
+		git -c protocol.file.allow=always \
+			submodule add "$PWD"/.git sub &&
 		git commit -m withsub &&
 		git worktree add second HEAD &&
 		git worktree move second third
@@ -148,7 +149,7 @@ test_expect_success 'move a repo with uninitialized submodule' '
 test_expect_success 'not move a repo with initialized submodule' '
 	(
 		cd withsub &&
-		git -C third submodule update &&
+		git -c protocol.file.allow=always -C third submodule update &&
 		test_must_fail git worktree move third forth
 	)
 '
@@ -200,7 +201,7 @@ test_expect_success 'proper error when worktree not found' '
 	for i in noodle noodle/bork
 	do
 		test_must_fail git worktree lock $i 2>err &&
-		test_i18ngrep "not a working tree" err || return 1
+		test_grep "not a working tree" err || return 1
 	done
 '
 
@@ -227,6 +228,7 @@ test_expect_success 'remove cleans up .git/worktrees when empty' '
 '
 
 test_expect_success 'remove a repo with uninitialized submodule' '
+	test_config_global protocol.file.allow always &&
 	(
 		cd withsub &&
 		git worktree add to-remove HEAD &&
@@ -235,12 +237,38 @@ test_expect_success 'remove a repo with uninitialized submodule' '
 '
 
 test_expect_success 'not remove a repo with initialized submodule' '
+	test_config_global protocol.file.allow always &&
 	(
 		cd withsub &&
 		git worktree add to-remove HEAD &&
 		git -C to-remove submodule update &&
 		test_must_fail git worktree remove to-remove
 	)
+'
+
+test_expect_success 'move worktree with absolute path to relative path' '
+	test_config worktree.useRelativePaths false &&
+	git worktree add ./absolute &&
+	git worktree move --relative-paths absolute relative &&
+	echo "gitdir: ../.git/worktrees/absolute" >expect &&
+	test_cmp expect relative/.git &&
+	echo "../../../relative/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir &&
+	test_config worktree.useRelativePaths true &&
+	git worktree move relative relative2 &&
+	echo "gitdir: ../.git/worktrees/absolute" >expect &&
+	test_cmp expect relative2/.git &&
+	echo "../../../relative2/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir
+'
+
+test_expect_success 'move worktree with relative path to absolute path' '
+	test_config worktree.useRelativePaths true &&
+	git worktree move --no-relative-paths relative2 absolute &&
+	echo "gitdir: $(pwd)/.git/worktrees/absolute" >expect &&
+	test_cmp expect absolute/.git &&
+	echo "$(pwd)/absolute/.git" >expect &&
+	test_cmp expect .git/worktrees/absolute/gitdir
 '
 
 test_done

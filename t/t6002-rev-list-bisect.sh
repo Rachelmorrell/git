@@ -27,13 +27,16 @@ test_bisection_diff()
 	# Test if bisection size is close to half of list size within
 	# tolerance.
 	#
-	_bisect_err=$(expr $_list_size - $_bisection_size \* 2)
-	test "$_bisect_err" -lt 0 && _bisect_err=$(expr 0 - $_bisect_err)
-	_bisect_err=$(expr $_bisect_err / 2) ; # floor
+	_bisect_err=$(($_list_size - $_bisection_size * 2))
+	if test "$_bisect_err" -lt 0
+	then
+		_bisect_err=$((0 - $_bisect_err))
+	fi
+	_bisect_err=$(($_bisect_err / 2)) ; # floor
 
-	test_expect_success \
-	"bisection diff $_bisect_option $_head $* <= $_max_diff" \
-	'test $_bisect_err -le $_max_diff'
+	test_expect_success "bisection diff $_bisect_option $_head $* <= $_max_diff" '
+		test $_bisect_err -le $_max_diff
+	'
 }
 
 date >path0
@@ -306,6 +309,11 @@ test_expect_success '--bisect-all --first-parent' '
 	sort -k4,4r -k1,1 expect.unsorted >expect &&
 	git rev-list --bisect-all --first-parent E ^F >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success '--bisect without any revisions' '
+	git rev-list --bisect HEAD..HEAD >out &&
+	test_must_be_empty out
 '
 
 test_done

@@ -86,21 +86,24 @@ typedef int (*compare_strings_fn)(const char *, const char *);
  */
 struct string_list {
 	struct string_list_item *items;
-	unsigned int nr, alloc;
+	size_t nr;
+	size_t alloc;
 	unsigned int strdup_strings:1;
 	compare_strings_fn cmp; /* NULL uses strcmp() */
 };
 
-#define STRING_LIST_INIT_NODUP { NULL, 0, 0, 0, NULL }
-#define STRING_LIST_INIT_DUP   { NULL, 0, 0, 1, NULL }
+#define STRING_LIST_INIT_NODUP { 0 }
+#define STRING_LIST_INIT_DUP   { .strdup_strings = 1 }
 
 /* General functions which work with both sorted and unsorted lists. */
 
 /**
- * Initialize the members of the string_list, set `strdup_strings`
- * member according to the value of the second parameter.
+ * Initialize the members of a string_list pointer in the same way as
+ * the corresponding `STRING_LIST_INIT_NODUP` and
+ * `STRING_LIST_INIT_DUP` macros.
  */
-void string_list_init(struct string_list *list, int strdup_strings);
+void string_list_init_nodup(struct string_list *list);
+void string_list_init_dup(struct string_list *list);
 
 /** Callback function type for for_each_string_list */
 typedef int (*string_list_each_func_t)(struct string_list_item *, void *);
@@ -131,6 +134,16 @@ typedef void (*string_list_clear_func_t)(void *p, const char *str);
 /** Call a custom clear function on each util pointer */
 void string_list_clear_func(struct string_list *list, string_list_clear_func_t clearfunc);
 
+/*
+ * Set the length of a string_list to `nr`, provided that (a) `list`
+ * does not own its own storage, and (b) that `nr` is no larger than
+ * `list->nr`.
+ *
+ * Useful when "shrinking" `list` to write over existing entries that
+ * are no longer used without reallocating.
+ */
+void string_list_setlen(struct string_list *list, size_t nr);
+
 /**
  * Apply `func` to each item. If `func` returns nonzero, the
  * iteration aborts and the return value is propagated.
@@ -138,7 +151,12 @@ void string_list_clear_func(struct string_list *list, string_list_clear_func_t c
 int for_each_string_list(struct string_list *list,
 			 string_list_each_func_t func, void *cb_data);
 
-/** Iterate over each item, as a macro. */
+/**
+ * Iterate over each item, as a macro.
+ *
+ * Be sure that 'list' is non-NULL. The macro cannot perform NULL
+ * checks due to -Werror=address errors.
+ */
 #define for_each_string_list_item(item,list)            \
 	for (item = (list)->items;                      \
 	     item && item < (list)->items + (list)->nr; \
@@ -154,9 +172,15 @@ void string_list_remove_empty_items(struct string_list *list, int free_util);
 /* Use these functions only on sorted lists: */
 
 /** Determine if the string_list has a given string or not. */
-int string_list_has_string(const struct string_list *list, const char *string);
-int string_list_find_insert_index(const struct string_list *list, const char *string,
-				  int negative_existing_index);
+bool string_list_has_string(const struct string_list *list, const char *string);
+
+/**
+ * Find the index at which a new element should be inserted into the
+ * string_list to maintain sorted order. If exact_match is not NULL,
+ * it will be set to true if the string already exists in the list.
+ */
+size_t string_list_find_insert_index(const struct string_list *list, const char *string,
+				     bool *exact_match);
 
 /**
  * Insert a new element to the string_list. The returned pointer can
@@ -216,6 +240,12 @@ struct string_list_item *string_list_append_nodup(struct string_list *list, char
 void string_list_sort(struct string_list *list);
 
 /**
+ * Sort the list and then remove duplicate entries.  If free_util is true,
+ * call free() on the util members of any items that have to be deleted.
+ */
+void string_list_sort_u(struct string_list *list, int free_util);
+
+/**
  * Like `string_list_has_string()` but for unsorted lists. Linear in
  * size of the list.
  */
@@ -236,7 +266,15 @@ struct string_list_item *unsorted_string_list_lookup(struct string_list *list,
 void unsorted_string_list_delete_item(struct string_list *list, int i, int free_util);
 
 /**
- * Split string into substrings on character `delim` and append the
+ * Remove the first item matching `str` from an unsorted string_list.
+ * No-op if `str` is not found. If `free_util` is non-zero, the `util`
+ * pointer of the removed item is freed before deletion.
+ */
+void unsorted_string_list_remove(struct string_list *list, const char *str,
+				 int free_util);
+
+/**
+ * Split string into substrings on characters in `delim` and append the
  * substrings to `list`.  The input string is not modified.
  * list->strdup_strings must be set, as new memory needs to be
  * allocated to hold the substrings.  If maxsplit is non-negative,
@@ -244,15 +282,15 @@ void unsorted_string_list_delete_item(struct string_list *list, int i, int free_
  * appended to list.
  *
  * Examples:
- *   string_list_split(l, "foo:bar:baz", ':', -1) -> ["foo", "bar", "baz"]
- *   string_list_split(l, "foo:bar:baz", ':', 0) -> ["foo:bar:baz"]
- *   string_list_split(l, "foo:bar:baz", ':', 1) -> ["foo", "bar:baz"]
- *   string_list_split(l, "foo:bar:", ':', -1) -> ["foo", "bar", ""]
- *   string_list_split(l, "", ':', -1) -> [""]
- *   string_list_split(l, ":", ':', -1) -> ["", ""]
+ *   string_list_split(l, "foo:bar:baz", ":", -1) -> ["foo", "bar", "baz"]
+ *   string_list_split(l, "foo:bar:baz", ":", 0) -> ["foo:bar:baz"]
+ *   string_list_split(l, "foo:bar:baz", ":", 1) -> ["foo", "bar:baz"]
+ *   string_list_split(l, "foo:bar:", ":", -1) -> ["foo", "bar", ""]
+ *   string_list_split(l, "", ":", -1) -> [""]
+ *   string_list_split(l, ":", ":", -1) -> ["", ""]
  */
 int string_list_split(struct string_list *list, const char *string,
-		      int delim, int maxsplit);
+		      const char *delim, int maxsplit);
 
 /*
  * Like string_list_split(), except that string is split in-place: the
@@ -262,5 +300,22 @@ int string_list_split(struct string_list *list, const char *string,
  * list->strdup_strings must *not* be set.
  */
 int string_list_split_in_place(struct string_list *list, char *string,
-			       int delim, int maxsplit);
+			       const char *delim, int maxsplit);
+
+/* Flag bits for split_f and split_in_place_f functions */
+enum {
+	/*
+	 * trim whitespaces around resulting string piece before adding
+	 * it to the list
+	 */
+	STRING_LIST_SPLIT_TRIM = (1 << 0),
+	/* omit adding empty string piece to the resulting list */
+	STRING_LIST_SPLIT_NONEMPTY = (1 << 1),
+};
+
+int string_list_split_f(struct string_list *, const char *string,
+			const char *delim, int maxsplit, unsigned flags);
+
+int string_list_split_in_place_f(struct string_list *, char *string,
+				 const char *delim, int maxsplit, unsigned flags);
 #endif /* STRING_LIST_H */

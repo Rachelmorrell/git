@@ -4,7 +4,7 @@ test_description="git merge
 
 Testing a custom strategy.
 
-*   (HEAD, master) Merge commit 'c3'
+*   (HEAD, main) Merge commit 'c3'
 |\
 | * (tag: c3) c3
 * | (tag: c1) c1
@@ -60,7 +60,7 @@ test_expect_success 'merge c2 with a custom strategy' '
 	test_cmp second-parent.expected second-parent &&
 	test_cmp tree.expected tree &&
 	test -f c0.c &&
-	grep c1c1 c1.c &&
+	test_grep c1c1 c1.c &&
 	test -f c2.c
 '
 

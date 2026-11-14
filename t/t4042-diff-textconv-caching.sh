@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test textconv caching'
+
 . ./test-lib.sh
 
 cat >helper <<'EOF'
@@ -116,6 +117,36 @@ test_expect_success 'switching diff driver produces correct results' '
 # --no-walk lets us reliably reproduce the order of traversal.
 test_expect_success 'log notes cache and still use cache for -p' '
 	git log --no-walk -p refs/notes/textconv/magic HEAD
+'
+
+test_expect_success 'caching is silently ignored outside repo' '
+	test_oid_cache <<-\EOM &&
+	oid1 sha1:5626abf
+	oid1 sha256:a4ed1f3
+	oid2 sha1:f719efd
+	oid2 sha256:aa9e7dc
+	EOM
+	oid1=$(test_oid --hash=builtin oid1) &&
+	oid2=$(test_oid --hash=builtin oid2) &&
+	mkdir -p non-repo &&
+	echo one >non-repo/one &&
+	echo two >non-repo/two &&
+	echo "* diff=test" >attr &&
+	test_expect_code 1 \
+	nongit git -c core.attributesFile="$PWD/attr" \
+		   -c diff.test.textconv="tr a-z A-Z <" \
+		   -c diff.test.cachetextconv=true \
+		   diff --no-index one two >actual &&
+	cat >expect <<-EOF &&
+	diff --git a/one b/two
+	index $oid1..$oid2 100644
+	--- a/one
+	+++ b/two
+	@@ -1 +1 @@
+	-ONE
+	+TWO
+	EOF
+	test_cmp expect actual
 '
 
 test_done

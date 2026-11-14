@@ -2,6 +2,9 @@
 
 test_description='git p4 options'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./lib-git-p4.sh
 
 test_expect_success 'start p4d' '
@@ -27,14 +30,14 @@ test_expect_success 'clone no --git-dir' '
 	test_must_fail git p4 clone --git-dir=xx //depot
 '
 
-test_expect_success 'clone --branch should checkout master' '
+test_expect_success 'clone --branch should checkout main' '
 	git p4 clone --branch=refs/remotes/p4/sb --dest="$git" //depot &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
 		git rev-parse refs/remotes/p4/sb >sb &&
-		git rev-parse refs/heads/master >master &&
-		test_cmp sb master &&
+		git rev-parse refs/heads/main >main &&
+		test_cmp sb main &&
 		git rev-parse HEAD >head &&
 		test_cmp sb head
 	)
@@ -46,7 +49,7 @@ test_expect_success 'sync when no master branch prints a nice error' '
 	(
 		cd "$git" &&
 		test_must_fail git p4 sync 2>err &&
-		grep "Error: no branch refs/remotes/p4/master" err
+		test_grep "Error: no branch refs/remotes/p4/master" err
 	)
 '
 
@@ -82,9 +85,9 @@ test_expect_success 'sync when two branches but no master should noop' '
 		git p4 sync --branch=refs/remotes/p4/b2 //depot@2 &&
 		git p4 sync &&
 		git show -s --format=%s refs/remotes/p4/b1 >show &&
-		grep "Initial import" show &&
+		test_grep "Initial import" show &&
 		git show -s --format=%s refs/remotes/p4/b2 >show &&
-		grep "Initial import" show
+		test_grep "Initial import" show
 	)
 '
 
@@ -97,9 +100,9 @@ test_expect_success 'sync --branch updates specific branch, no detection' '
 		git p4 sync --branch=b2 //depot@2 &&
 		git p4 sync --branch=b2 &&
 		git show -s --format=%s refs/remotes/p4/b1 >show &&
-		grep "Initial import" show &&
+		test_grep "Initial import" show &&
 		git show -s --format=%s refs/remotes/p4/b2 >show &&
-		grep "change 3" show
+		test_grep "change 3" show
 	)
 '
 
@@ -147,22 +150,22 @@ test_expect_success 'clone --changesfile, @all' '
 	test_must_fail git p4 clone --changesfile="$TRASH_DIRECTORY/cf" --dest="$git" //depot@all
 '
 
-# imports both master and p4/master in refs/heads
+# imports both main and p4/master in refs/heads
 # requires --import-local on sync to find p4 refs/heads
-# does not update master on sync, just p4/master
+# does not update main on sync, just p4/master
 test_expect_success 'clone/sync --import-local' '
 	git p4 clone --import-local --dest="$git" //depot@1,2 &&
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
-		git log --oneline refs/heads/master >lines &&
+		git log --oneline refs/heads/main >lines &&
 		test_line_count = 2 lines &&
 		git log --oneline refs/heads/p4/master >lines &&
 		test_line_count = 2 lines &&
 		test_must_fail git p4 sync &&
 
 		git p4 sync --import-local &&
-		git log --oneline refs/heads/master >lines &&
+		git log --oneline refs/heads/main >lines &&
 		test_line_count = 2 lines &&
 		git log --oneline refs/heads/p4/master >lines &&
 		test_line_count = 3 lines
@@ -174,7 +177,7 @@ test_expect_success 'clone --max-changes' '
 	test_when_finished cleanup_git &&
 	(
 		cd "$git" &&
-		git log --oneline refs/heads/master >lines &&
+		git log --oneline refs/heads/main >lines &&
 		test_line_count = 2 lines
 	)
 '
@@ -237,7 +240,7 @@ test_expect_success 'clone --use-client-spec' '
 			git init &&
 			git config git-p4.useClientSpec true &&
 			git p4 sync //depot/... &&
-			git checkout -b master p4/master &&
+			git checkout -b main p4/master &&
 			test_path_is_file bus/dir/f4 &&
 			test_path_is_missing file1
 		)

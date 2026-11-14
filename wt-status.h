@@ -23,7 +23,8 @@ enum color_wt_status {
 };
 
 enum untracked_status_type {
-	SHOW_NO_UNTRACKED_FILES,
+	SHOW_UNTRACKED_FILES_ERROR = -1,
+	SHOW_NO_UNTRACKED_FILES = 0,
 	SHOW_NORMAL_UNTRACKED_FILES,
 	SHOW_ALL_UNTRACKED_FILES
 };
@@ -77,9 +78,8 @@ enum wt_status_format {
 	STATUS_FORMAT_UNSPECIFIED
 };
 
-#define HEAD_DETACHED_AT _("HEAD detached at ")
-#define HEAD_DETACHED_FROM _("HEAD detached from ")
 #define SPARSE_CHECKOUT_DISABLED -1
+#define SPARSE_CHECKOUT_SPARSE_INDEX -2
 
 struct wt_status_state {
 	int merge_in_progress;
@@ -95,6 +95,7 @@ struct wt_status_state {
 	char *branch;
 	char *onto;
 	char *detached_from;
+	char *bisecting_from;
 	struct object_id detached_oid;
 	struct object_id revert_head_oid;
 	struct object_id cherry_pick_head_oid;
@@ -110,7 +111,7 @@ struct wt_status {
 	int amend;
 	enum commit_whence whence;
 	int nowarn;
-	int use_color;
+	enum git_colorbool use_color;
 	int no_gettext;
 	int display_comment_prefix;
 	int relative_paths;
@@ -130,6 +131,7 @@ struct wt_status {
 	int rename_score;
 	int rename_limit;
 	enum wt_status_format status_format;
+	unsigned char added_cut_line; /* boolean */
 	struct wt_status_state state;
 	struct object_id oid_commit; /* when not Initial */
 
@@ -147,10 +149,19 @@ struct wt_status {
 
 size_t wt_status_locate_end(const char *s, size_t len);
 void wt_status_append_cut_line(struct strbuf *buf);
-void wt_status_add_cut_line(FILE *fp);
+void wt_status_add_cut_line(struct wt_status *s);
 void wt_status_prepare(struct repository *r, struct wt_status *s);
 void wt_status_print(struct wt_status *s);
 void wt_status_collect(struct wt_status *s);
+
+/*
+ * Collect all changes between the two trees. Changes will be displayed as if
+ * they were staged into the index.
+ */
+void wt_status_collect_changes_trees(struct wt_status *s,
+				     const struct object_id *old_treeish,
+				     const struct object_id *new_treeish);
+
 /*
  * Frees the buffers allocated by wt_status_collect.
  */

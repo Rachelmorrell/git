@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test direct comparison of blobs via git-diff'
+
 . ./test-lib.sh
 
 run_diff () {
@@ -46,7 +47,7 @@ test_expect_success 'sha1 diff uses arguments as paths' '
 	check_paths $sha1_one $sha1_two
 '
 test_expect_success 'sha1 diff has no mode change' '
-	! grep mode diff
+	test_grep ! mode diff
 '
 
 test_expect_success 'diff by tree:path (run)' '

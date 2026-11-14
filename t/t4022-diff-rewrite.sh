@@ -3,15 +3,17 @@
 test_description='rewrite diff'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-diff-data.sh
 
 test_expect_success setup '
 
-	cat "$TEST_DIRECTORY"/../COPYING >test &&
+	COPYING_test_data >test.data &&
+	cp test.data test &&
 	git add test &&
 	tr \
 	  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" \
 	  "nopqrstuvwxyzabcdefghijklmNOPQRSTUVWXYZABCDEFGHIJKLM" \
-	  <"$TEST_DIRECTORY"/../COPYING >test &&
+	  <test.data >test &&
 	echo "to be deleted" >test2 &&
 	blob=$(git hash-object test2) &&
 	blob=$(git rev-parse --short $blob) &&
@@ -22,7 +24,7 @@ test_expect_success setup '
 test_expect_success 'detect rewrite' '
 
 	actual=$(git diff-files -B --summary test) &&
-	verbose expr "$actual" : " rewrite test ([0-9]*%)$"
+	expr "$actual" : " rewrite test ([0-9]*%)$"
 
 '
 
@@ -56,13 +58,13 @@ test_expect_success 'suppress deletion diff with -D' '
 test_expect_success 'show deletion diff with -B' '
 
 	git diff -B -- test >actual &&
-	grep "Linus Torvalds" actual
+	test_grep "Linus Torvalds" actual
 '
 
 test_expect_success 'suppress deletion diff with -B -D' '
 
 	git diff -B -D -- test >actual &&
-	grep -v "Linus Torvalds" actual
+	test_grep -v "Linus Torvalds" actual
 '
 
 test_expect_success 'prepare a file that ends with an incomplete line' '
@@ -80,19 +82,19 @@ test_expect_success 'rewrite the middle 90% of sequence file and terminate with 
 
 test_expect_success 'confirm that sequence file is considered a rewrite' '
 	git diff -B seq >res &&
-	grep "dissimilarity index" res
+	test_grep "dissimilarity index" res
 '
 
 test_expect_success 'no newline at eof is on its own line without -B' '
 	git diff seq >res &&
-	grep "^\\\\ " res &&
-	! grep "^..*\\\\ " res
+	test_grep "^\\\\ " res &&
+	test_grep ! "^..*\\\\ " res
 '
 
 test_expect_success 'no newline at eof is on its own line with -B' '
 	git diff -B seq >res &&
-	grep "^\\\\ " res &&
-	! grep "^..*\\\\ " res
+	test_grep "^\\\\ " res &&
+	test_grep ! "^..*\\\\ " res
 '
 
 test_done

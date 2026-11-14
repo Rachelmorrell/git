@@ -3,6 +3,9 @@
  */
 
 #undef NOGDI
+
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "../git-compat-util.h"
 #include <wingdi.h>
 #include <winreg.h>
@@ -29,46 +32,18 @@ static int non_ascii_used = 0;
 static HANDLE hthread, hread, hwrite;
 static HANDLE hconsole1, hconsole2;
 
-#ifdef __MINGW32__
-#if !defined(__MINGW64_VERSION_MAJOR) || __MINGW64_VERSION_MAJOR < 5
-typedef struct _CONSOLE_FONT_INFOEX {
-	ULONG cbSize;
-	DWORD nFont;
-	COORD dwFontSize;
-	UINT FontFamily;
-	UINT FontWeight;
-	WCHAR FaceName[LF_FACESIZE];
-} CONSOLE_FONT_INFOEX, *PCONSOLE_FONT_INFOEX;
-#endif
-#endif
-
 static void warn_if_raster_font(void)
 {
 	DWORD fontFamily = 0;
-	DECLARE_PROC_ADDR(kernel32.dll, BOOL, GetCurrentConsoleFontEx,
-			HANDLE, BOOL, PCONSOLE_FONT_INFOEX);
+	CONSOLE_FONT_INFOEX cfi;
 
 	/* don't bother if output was ascii only */
 	if (!non_ascii_used)
 		return;
 
-	/* GetCurrentConsoleFontEx is available since Vista */
-	if (INIT_PROC_ADDR(GetCurrentConsoleFontEx)) {
-		CONSOLE_FONT_INFOEX cfi;
-		cfi.cbSize = sizeof(cfi);
-		if (GetCurrentConsoleFontEx(console, 0, &cfi))
-			fontFamily = cfi.FontFamily;
-	} else {
-		/* pre-Vista: check default console font in registry */
-		HKEY hkey;
-		if (ERROR_SUCCESS == RegOpenKeyExA(HKEY_CURRENT_USER, "Console",
-				0, KEY_READ, &hkey)) {
-			DWORD size = sizeof(fontFamily);
-			RegQueryValueExA(hkey, "FontFamily", NULL, NULL,
-					(LPVOID) &fontFamily, &size);
-			RegCloseKey(hkey);
-		}
-	}
+	cfi.cbSize = sizeof(cfi);
+	if (GetCurrentConsoleFontEx(console, 0, &cfi))
+		fontFamily = cfi.FontFamily;
 
 	if (!(fontFamily & TMPF_TRUETYPE)) {
 		const wchar_t *msg = L"\nWarning: Your console font probably "
@@ -137,7 +112,7 @@ static void write_console(unsigned char *str, size_t len)
 	/* convert utf-8 to utf-16 */
 	int wlen = xutftowcsn(wbuf, (char*) str, ARRAY_SIZE(wbuf), len);
 	if (wlen < 0) {
-		wchar_t *err = L"[invalid]";
+		const wchar_t *err = L"[invalid]";
 		WriteConsoleW(console, err, wcslen(err), &dummy, NULL);
 		return;
 	}
@@ -338,7 +313,7 @@ enum {
 	TEXT = 0, ESCAPE = 033, BRACKET = '['
 };
 
-static DWORD WINAPI console_thread(LPVOID unused)
+static DWORD WINAPI console_thread(LPVOID data UNUSED)
 {
 	unsigned char buffer[BUFFER_SIZE];
 	DWORD bytes;
@@ -461,15 +436,6 @@ static void winansi_exit(void)
 	CloseHandle(hthread);
 }
 
-static void die_lasterr(const char *fmt, ...)
-{
-	va_list params;
-	va_start(params, fmt);
-	errno = err_win_to_posix(GetLastError());
-	die_errno(fmt, params);
-	va_end(params);
-}
-
 #undef dup2
 int winansi_dup2(int oldfd, int newfd)
 {
@@ -487,8 +453,8 @@ static HANDLE duplicate_handle(HANDLE hnd)
 	HANDLE hresult, hproc = GetCurrentProcess();
 	if (!DuplicateHandle(hproc, hnd, hproc, &hresult, 0, TRUE,
 			DUPLICATE_SAME_ACCESS))
-		die_lasterr("DuplicateHandle(%li) failed",
-			(long) (intptr_t) hnd);
+		die("DuplicateHandle(%li) failed: %lu",
+		    (long) (intptr_t) hnd, GetLastError());
 	return hresult;
 }
 
@@ -634,16 +600,16 @@ void winansi_init(void)
 	hwrite = CreateNamedPipeW(name, PIPE_ACCESS_OUTBOUND,
 		PIPE_TYPE_BYTE | PIPE_WAIT, 1, BUFFER_SIZE, 0, 0, NULL);
 	if (hwrite == INVALID_HANDLE_VALUE)
-		die_lasterr("CreateNamedPipe failed");
+		die("CreateNamedPipe failed: %lu", GetLastError());
 
 	hread = CreateFileW(name, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 	if (hread == INVALID_HANDLE_VALUE)
-		die_lasterr("CreateFile for named pipe failed");
+		die("CreateFile for named pipe failed: %lu", GetLastError());
 
 	/* start console spool thread on the pipe's read end */
 	hthread = CreateThread(NULL, 0, console_thread, NULL, 0, NULL);
-	if (hthread == INVALID_HANDLE_VALUE)
-		die_lasterr("CreateThread(console_thread) failed");
+	if (!hthread)
+		die("CreateThread(console_thread) failed: %lu", GetLastError());
 
 	/* schedule cleanup routine */
 	if (atexit(winansi_exit))

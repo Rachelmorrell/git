@@ -1,11 +1,17 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hex-ll.h"
+#include "strbuf.h"
 #include "urlmatch.h"
+#include "url.h"
 
 #define URL_ALPHA "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 #define URL_DIGIT "0123456789"
 #define URL_ALPHADIGIT URL_ALPHA URL_DIGIT
 #define URL_SCHEME_CHARS URL_ALPHADIGIT "+.-"
-#define URL_HOST_CHARS URL_ALPHADIGIT ".-[:]" /* IPv6 literals need [:] */
+#define URL_HOST_CHARS URL_ALPHADIGIT ".-_[:]" /* IPv6 literals need [:] */
 #define URL_UNSAFE_CHARS " <>\"%{}|\\^`" /* plus 0x00-0x1F,0x7F-0xFF */
 #define URL_GEN_RESERVED ":/?#[]@"
 #define URL_SUB_RESERVED "!$&'()*+,;="
@@ -106,7 +112,7 @@ static int match_host(const struct url_info *url_info,
 	return (!url_len && !pat_len);
 }
 
-static char *url_normalize_1(const char *url, struct url_info *out_info, char allow_globs)
+static char *url_normalize_1(const char *url, struct url_info *out_info, bool allow_globs)
 {
 	/*
 	 * Normalize NUL-terminated url using the following rules:
@@ -209,7 +215,7 @@ static char *url_normalize_1(const char *url, struct url_info *out_info, char al
 	 */
 	if (!url_len || strchr(":/?#", *url)) {
 		/* Missing host invalid for all URL schemes except file */
-		if (strncmp(norm.buf, "file:", 5)) {
+		if (!starts_with(norm.buf, "file:")) {
 			if (out_info) {
 				out_info->url = NULL;
 				out_info->err = _("missing host and scheme is not 'file:'");
@@ -268,11 +274,11 @@ static char *url_normalize_1(const char *url, struct url_info *out_info, char al
 		if (url == slash_ptr) {
 			/* Skip ":" port with no number, it's same as default */
 		} else if (slash_ptr - url == 2 &&
-			   !strncmp(norm.buf, "http:", 5) &&
+			   starts_with(norm.buf, "http:") &&
 			   !strncmp(url, "80", 2)) {
 			/* Skip http :80 as it's the default */
 		} else if (slash_ptr - url == 3 &&
-			   !strncmp(norm.buf, "https:", 6) &&
+			   starts_with(norm.buf, "https:") &&
 			   !strncmp(url, "443", 3)) {
 			/* Skip https :443 as it's the default */
 		} else {
@@ -432,7 +438,138 @@ static char *url_normalize_1(const char *url, struct url_info *out_info, char al
 
 char *url_normalize(const char *url, struct url_info *out_info)
 {
-	return url_normalize_1(url, out_info, 0);
+	return url_normalize_1(url, out_info, false);
+}
+
+char *url_normalize_pattern(const char *url, struct url_info *out_info)
+{
+	return url_normalize_1(url, out_info, true);
+}
+
+char *url_parse(const char *url_orig, struct url_info *out_info)
+{
+	struct strbuf url;
+	char *host, *separator;
+	char *detached, *normalized;
+	char *url_decoded;
+	enum url_scheme scheme = URL_SCHEME_LOCAL;
+	struct url_info local_info;
+	struct url_info *info = out_info ? out_info : &local_info;
+	bool scp_syntax = false;
+
+	if (is_url(url_orig))
+		url_decoded = url_decode(url_orig);
+	else
+		url_decoded = xstrdup(url_orig);
+
+	strbuf_init(&url, strlen(url_decoded) + sizeof("ssh://"));
+	strbuf_addstr(&url, url_decoded);
+	free(url_decoded);
+
+	host = strstr(url.buf, "://");
+	if (host) {
+		/*
+		 * Temporarily NUL-terminate the scheme name
+		 * so we can pass it to url_get_scheme(),
+		 * then restore the ':' so the buffer
+		 * is intact for url_normalize() below.
+		 */
+		char saved = *host;
+		*host = '\0';
+		scheme = url_get_scheme(url.buf);
+		*host = saved;
+		host += 3;
+	} else {
+		if (!url_is_local_not_ssh(url.buf)) {
+			scp_syntax = true;
+			scheme = URL_SCHEME_SSH;
+			strbuf_insertstr(&url, 0, "ssh://");
+			host = url.buf + strlen("ssh://");
+		}
+	}
+
+	/*
+	 * Path starts after ':' in scp style SSH URLs.
+	 *
+	 * The host portion can begin with an optional "user@",
+	 * and the host itself can be wrapped in '[' ']' brackets.
+	 * The bracket form is git's legacy way of supporting:
+	 *
+	 *   - IPv6 literals: [::1]:repo
+	 *   - host:port pairs in the short form: [myhost:123]:src
+	 *   - Plain hostnames that happen to need bracketing: [host]:path
+	 *
+	 * Treat '[' followed by 0 or 1 inner colons as the host:port
+	 * or plain hostname form and strip the brackets so url_normalize
+	 * sees host[:port] natively. Two or more inner colons mark an
+	 * IPv6 literal: keep the brackets for url_normalize to recognize.
+	 *
+	 * The scp path separator is the ':' that follows the host part,
+	 * and we must skip over user@ and any '[...]' before searching.
+	 */
+	if (scp_syntax) {
+		char *user_at;
+		char *host_start;
+		char *bracket_end;
+
+		user_at = strchr(host, '@');
+		host_start = user_at ? user_at + 1 : host;
+
+		if (*host_start == '[') {
+			char *p;
+			int inner_colons;
+
+			bracket_end = strchr(host_start, ']');
+			inner_colons = 0;
+			for (p = host_start + 1; bracket_end && p < bracket_end; p++)
+				if (*p == ':')
+					inner_colons++;
+
+			if (bracket_end && inner_colons <= 1) {
+				size_t close_off = bracket_end - url.buf;
+				size_t open_off = host_start - url.buf;
+				strbuf_remove(&url, close_off, 1);
+				strbuf_remove(&url, open_off, 1);
+				separator = url.buf + close_off - 1;
+			} else if (bracket_end) {
+				separator = strchr(bracket_end + 1, ':');
+			} else {
+				separator = strchr(host_start, ':');
+			}
+		} else {
+			separator = strchr(host_start, ':');
+		}
+
+		if (separator) {
+			if (separator[1] == '/')
+				strbuf_remove(&url, separator - url.buf, 1);
+			else
+				*separator = '/';
+		}
+	}
+
+	detached = strbuf_detach(&url, NULL);
+	normalized = url_normalize(detached, info);
+	free(detached);
+
+	if (!normalized)
+		return NULL;
+
+	/*
+	 * Point path to ~ for URLs like this:
+	 *
+	 *     ssh://host.xz/~user/repo
+	 *     git://host.xz/~user/repo
+	 *     host.xz:~user/repo
+	 */
+	if (scheme == URL_SCHEME_GIT || scheme == URL_SCHEME_SSH) {
+		if (normalized[info->path_off + 1] == '~') {
+			info->path_off++;
+			info->path_len--;
+		}
+	}
+
+	return normalized;
 }
 
 static size_t url_match_prefix(const char *url,
@@ -548,7 +685,8 @@ static int cmp_matches(const struct urlmatch_item *a,
 	return 0;
 }
 
-int urlmatch_config_entry(const char *var, const char *value, void *cb)
+int urlmatch_config_entry(const char *var, const char *value,
+			  const struct config_context *ctx, void *cb)
 {
 	struct string_list_item *item;
 	struct urlmatch_config *collect = cb;
@@ -562,7 +700,7 @@ int urlmatch_config_entry(const char *var, const char *value, void *cb)
 
 	if (!skip_prefix(var, collect->section, &key) || *(key++) != '.') {
 		if (collect->cascade_fn)
-			return collect->cascade_fn(var, value, cb);
+			return collect->cascade_fn(var, value, ctx, cb);
 		return 0; /* not interested */
 	}
 	dot = strrchr(key, '.');
@@ -571,7 +709,7 @@ int urlmatch_config_entry(const char *var, const char *value, void *cb)
 		struct url_info norm_info;
 
 		config_url = xmemdupz(key, dot - key);
-		norm_url = url_normalize_1(config_url, &norm_info, 1);
+		norm_url = url_normalize_1(config_url, &norm_info, true);
 		if (norm_url)
 			retval = match_urls(url, &norm_info, &matched);
 		else if (collect->fallback_match_fn)
@@ -606,8 +744,13 @@ int urlmatch_config_entry(const char *var, const char *value, void *cb)
 	strbuf_addstr(&synthkey, collect->section);
 	strbuf_addch(&synthkey, '.');
 	strbuf_addstr(&synthkey, key);
-	retval = collect->collect_fn(synthkey.buf, value, collect->cb);
+	retval = collect->collect_fn(synthkey.buf, value, ctx, collect->cb);
 
 	strbuf_release(&synthkey);
 	return retval;
+}
+
+void urlmatch_config_release(struct urlmatch_config *config)
+{
+	string_list_clear(&config->vars, 1);
 }

@@ -1,8 +1,15 @@
+# The default target of this Makefile is...
+all::
+
+# Import tree-wide shared Makefile behavior and libraries
+include ../shared.mak
+
 # Run tests
 #
 # Copyright (c) 2005 Junio C Hamano
 #
 
+-include ../config.mak.uname
 -include ../config.mak.autogen
 -include ../config.mak
 
@@ -14,14 +21,17 @@ TAR ?= $(TAR)
 RM ?= rm -f
 PROVE ?= prove
 DEFAULT_TEST_TARGET ?= test
+DEFAULT_UNIT_TEST_TARGET ?= unit-tests-raw
 TEST_LINT ?= test-lint
 
 ifdef TEST_OUTPUT_DIRECTORY
 TEST_RESULTS_DIRECTORY = $(TEST_OUTPUT_DIRECTORY)/test-results
 CHAINLINTTMP = $(TEST_OUTPUT_DIRECTORY)/chainlinttmp
+GREPLINTTMP = $(TEST_OUTPUT_DIRECTORY)/greplinttmp
 else
 TEST_RESULTS_DIRECTORY = test-results
 CHAINLINTTMP = chainlinttmp
+GREPLINTTMP = greplinttmp
 endif
 
 # Shell quote;
@@ -30,18 +40,36 @@ TEST_SHELL_PATH_SQ = $(subst ','\'',$(TEST_SHELL_PATH))
 PERL_PATH_SQ = $(subst ','\'',$(PERL_PATH))
 TEST_RESULTS_DIRECTORY_SQ = $(subst ','\'',$(TEST_RESULTS_DIRECTORY))
 CHAINLINTTMP_SQ = $(subst ','\'',$(CHAINLINTTMP))
+GREPLINTTMP_SQ = $(subst ','\'',$(GREPLINTTMP))
 
 T = $(sort $(wildcard t[0-9][0-9][0-9][0-9]-*.sh))
-TGITWEB = $(sort $(wildcard t95[0-9][0-9]-*.sh))
 THELPERS = $(sort $(filter-out $(T),$(wildcard *.sh)))
+TLIBS = $(sort $(wildcard lib-*.sh)) annotate-tests.sh
 TPERF = $(sort $(wildcard perf/p[0-9][0-9][0-9][0-9]-*.sh))
+TINTEROP = $(sort $(wildcard interop/i[0-9][0-9][0-9][0-9]-*.sh))
 CHAINLINTTESTS = $(sort $(patsubst chainlint/%.test,%,$(wildcard chainlint/*.test)))
-CHAINLINT = sed -f chainlint.sed
+GREPLINTTESTS = $(sort $(patsubst greplint/%.test,%,$(wildcard greplint/*.test)))
+CHAINLINT = '$(PERL_PATH_SQ)' chainlint.pl
+UNIT_TEST_SOURCES = $(wildcard unit-tests/t-*.c)
+UNIT_TEST_PROGRAMS = $(patsubst unit-tests/%.c,unit-tests/bin/%$(X),$(UNIT_TEST_SOURCES))
+UNIT_TEST_PROGRAMS += unit-tests/bin/unit-tests$(X)
+UNIT_TESTS = $(sort $(UNIT_TEST_PROGRAMS))
+UNIT_TESTS_NO_DIR = $(notdir $(UNIT_TESTS))
 
-all: $(DEFAULT_TEST_TARGET)
+# `test-chainlint` (which is a dependency of `test-lint`, `test` and `prove`)
+# checks all tests in all scripts via a single invocation, so tell individual
+# scripts not to run the external "chainlint.pl" script themselves
+CHAINLINTSUPPRESS = GIT_TEST_EXT_CHAIN_LINT=0 && export GIT_TEST_EXT_CHAIN_LINT &&
 
-test: pre-clean check-chainlint $(TEST_LINT)
-	$(MAKE) aggregate-results-and-cleanup
+all:: $(DEFAULT_TEST_TARGET)
+
+test: pre-clean check-meson $(TEST_LINT)
+	$(CHAINLINTSUPPRESS) $(MAKE) aggregate-results-and-cleanup
+
+ifneq ($(PERL_PATH),)
+test: check-chainlint check-greplint
+prove: check-chainlint check-greplint
+endif
 
 failed:
 	@failed=$$(cd '$(TEST_RESULTS_DIRECTORY_SQ)' && \
@@ -49,21 +77,42 @@ failed:
 		sed -n 's/\.counts$$/.sh/p') && \
 	test -z "$$failed" || $(MAKE) $$failed
 
-prove: pre-clean check-chainlint $(TEST_LINT)
-	@echo "*** prove ***"; $(PROVE) --exec '$(TEST_SHELL_PATH_SQ)' $(GIT_PROVE_OPTS) $(T) :: $(GIT_TEST_OPTS)
+prove: pre-clean $(TEST_LINT)
+	@echo "*** prove (shell & unit tests) ***"
+	@$(CHAINLINTSUPPRESS) TEST_OPTIONS='$(GIT_TEST_OPTS)' TEST_SHELL_PATH='$(TEST_SHELL_PATH_SQ)' $(PROVE) --exec ./run-test.sh $(GIT_PROVE_OPTS) $(T) $(UNIT_TESTS)
 	$(MAKE) clean-except-prove-cache
 
 $(T):
 	@echo "*** $@ ***"; '$(TEST_SHELL_PATH_SQ)' $@ $(GIT_TEST_OPTS)
 
+$(UNIT_TESTS):
+	@echo "*** $@ ***"; $@
+
+.PHONY: unit-tests unit-tests-raw unit-tests-prove unit-tests-test-tool
+unit-tests: $(DEFAULT_UNIT_TEST_TARGET)
+
+unit-tests-raw: $(UNIT_TESTS)
+
+unit-tests-prove:
+	@echo "*** prove - unit tests ***"; $(PROVE) $(GIT_PROVE_OPTS) $(UNIT_TESTS)
+
+unit-tests-test-tool:
+	@echo "*** test-tool - unit tests **"
+	( \
+		cd unit-tests/bin && \
+		../../helper/test-tool$X run-command testsuite $(UNIT_TESTS_NO_DIR)\
+	)
+
 pre-clean:
 	$(RM) -r '$(TEST_RESULTS_DIRECTORY_SQ)'
 
-clean-except-prove-cache: clean-chainlint
-	$(RM) -r 'trash directory'.* '$(TEST_RESULTS_DIRECTORY_SQ)'
+clean-except-prove-cache: clean-chainlint clean-greplint
+	$(RM) -r 'trash directory'.*
 	$(RM) -r valgrind/bin
 
 clean: clean-except-prove-cache
+	$(RM) -r '$(TEST_RESULTS_DIRECTORY_SQ)'
+	$(RM) -r mesontmp
 	$(RM) .prove
 
 clean-chainlint:
@@ -71,15 +120,47 @@ clean-chainlint:
 
 check-chainlint:
 	@mkdir -p '$(CHAINLINTTMP_SQ)' && \
-	err=0 && \
-	for i in $(CHAINLINTTESTS); do \
-		$(CHAINLINT) <chainlint/$$i.test | \
-		sed -e '/^# LINT: /d' >'$(CHAINLINTTMP_SQ)'/$$i.actual && \
-		diff -u chainlint/$$i.expect '$(CHAINLINTTMP_SQ)'/$$i.actual || err=1; \
-	done && exit $$err
+	'$(PERL_PATH_SQ)' chainlint-cat.pl '$(CHAINLINTTMP_SQ)' $(CHAINLINTTESTS) && \
+	{ $(CHAINLINT) --emit-all '$(CHAINLINTTMP_SQ)'/tests >'$(CHAINLINTTMP_SQ)'/actual || true; } && \
+	diff -u '$(CHAINLINTTMP_SQ)'/expect '$(CHAINLINTTMP_SQ)'/actual
 
-test-lint: test-lint-duplicates test-lint-executable test-lint-shell-syntax \
+clean-greplint:
+	$(RM) -r '$(GREPLINTTMP_SQ)'
+
+check-greplint:
+	@mkdir -p '$(GREPLINTTMP_SQ)' && \
+	'$(PERL_PATH_SQ)' greplint-cat.pl '$(GREPLINTTMP_SQ)' $(GREPLINTTESTS) && \
+	{ '$(PERL_PATH_SQ)' greplint.pl \
+		$(patsubst %,greplint/%.test,$(GREPLINTTESTS)) \
+		>'$(GREPLINTTMP_SQ)'/actual 2>&1 || true; } && \
+	diff -u '$(GREPLINTTMP_SQ)'/expect '$(GREPLINTTMP_SQ)'/actual
+
+check-meson:
+	@# awk acts up when trying to match single quotes, so we use \047 instead.
+	@mkdir -p mesontmp && \
+	printf "%s\n" \
+		"integration_tests t[0-9][0-9][0-9][0-9]-*.sh" \
+		"clar_test_suites unit-tests/u-*.c" | \
+	while read -r variable pattern; do \
+		awk "/^$$variable = \[\$$/ {flag=1 ; next } /^]$$/ { flag=0 } flag { gsub(/^  \047/, \"\"); gsub(/\047,\$$/, \"\"); print }" meson.build >mesontmp/meson.txt && \
+		ls $$pattern >mesontmp/actual.txt && \
+		if ! cmp mesontmp/meson.txt mesontmp/actual.txt; then \
+			echo "Meson tests differ from actual tests:"; \
+			diff -u mesontmp/meson.txt mesontmp/actual.txt; \
+			exit 1; \
+		fi; \
+	done
+
+test-lint: test-lint-duplicates test-lint-executable \
 	test-lint-filenames
+ifneq ($(PERL_PATH),)
+test-lint: test-lint-shell-syntax test-greplint
+else
+GIT_TEST_CHAIN_LINT = 0
+endif
+ifneq ($(GIT_TEST_CHAIN_LINT),0)
+test-lint: test-chainlint
+endif
 
 test-lint-duplicates:
 	@dups=`echo $(T) $(TPERF) | tr ' ' '\n' | sed 's/-.*//' | sort | uniq -d` && \
@@ -94,6 +175,9 @@ test-lint-executable:
 test-lint-shell-syntax:
 	@'$(PERL_PATH_SQ)' check-non-portable-shell.pl $(T) $(THELPERS) $(TPERF)
 
+test-greplint:
+	@'$(PERL_PATH_SQ)' greplint.pl $(T) $(THELPERS) $(TPERF)
+
 test-lint-filenames:
 	@# We do *not* pass a glob to ls-files but use grep instead, to catch
 	@# non-ASCII characters (which are quoted within double-quotes)
@@ -102,17 +186,15 @@ test-lint-filenames:
 		test -z "$$bad" || { \
 		echo >&2 "non-portable file name(s): $$bad"; exit 1; }
 
+test-chainlint:
+	@$(CHAINLINT) $(T) $(TLIBS) $(TPERF) $(TINTEROP)
+
 aggregate-results-and-cleanup: $(T)
 	$(MAKE) aggregate-results
 	$(MAKE) clean
 
 aggregate-results:
-	for f in '$(TEST_RESULTS_DIRECTORY_SQ)'/t*-*.counts; do \
-		echo "$$f"; \
-	done | '$(SHELL_PATH_SQ)' ./aggregate-results.sh
-
-gitweb-test:
-	$(MAKE) $(TGITWEB)
+	@'$(SHELL_PATH_SQ)' ./aggregate-results.sh '$(TEST_RESULTS_DIRECTORY_SQ)'
 
 valgrind:
 	$(MAKE) GIT_TEST_OPTS="$(GIT_TEST_OPTS) --valgrind"
@@ -120,4 +202,15 @@ valgrind:
 perf:
 	$(MAKE) -C perf/ all
 
-.PHONY: pre-clean $(T) aggregate-results clean valgrind perf check-chainlint clean-chainlint
+.PHONY: pre-clean $(T) aggregate-results clean valgrind perf \
+	check-chainlint clean-chainlint test-chainlint \
+	check-greplint clean-greplint test-greplint $(UNIT_TESTS)
+
+.PHONY: libgit-sys-test libgit-rs-test
+libgit-sys-test:
+	$(QUIET)cargo test --manifest-path ../contrib/libgit-sys/Cargo.toml
+libgit-rs-test: libgit-sys-test
+	$(QUIET)cargo test --manifest-path ../contrib/libgit-rs/Cargo.toml
+ifdef INCLUDE_LIBGIT_RS
+all:: libgit-rs-test
+endif

@@ -130,7 +130,7 @@ void graph_setup_line_prefix(struct diff_options *diffopt);
  * This functions must be called BEFORE graph_init() is called.
  *
  * NOTE: This function isn't used in Git outside graph.c but it is used
- * by CGit (http://git.zx2c4.com/cgit/) to use HTML for colors.
+ * by CGit (https://git.zx2c4.com/cgit/) to use HTML for colors.
  */
 void graph_set_column_colors(const char **colors, unsigned short colors_max);
 
@@ -138,6 +138,11 @@ void graph_set_column_colors(const char **colors, unsigned short colors_max);
  * Create a new struct git_graph.
  */
 struct git_graph *graph_init(struct rev_info *opt);
+
+/*
+ * Free a struct git_graph.
+ */
+void graph_clear(struct git_graph *graph);
 
 /*
  * Update a git_graph with a new commit.
@@ -191,7 +196,7 @@ int graph_is_commit_finished(struct git_graph const *graph);
  * graph_update() is called.
  *
  * NOTE: This function isn't used in Git outside graph.c but it is used
- * by CGit (http://git.zx2c4.com/cgit/) to wrap HTML around graph lines.
+ * by CGit (https://git.zx2c4.com/cgit/) to wrap HTML around graph lines.
  */
 int graph_next_line(struct git_graph *graph, struct strbuf *sb);
 
@@ -256,5 +261,22 @@ int graph_show_remainder(struct git_graph *graph);
 void graph_show_commit_msg(struct git_graph *graph,
 			   FILE *file,
 			   struct strbuf const *sb);
+
+/*
+ * Pop the first commit from the graph's lookahead buffer.
+ * Returns NULL if the buffer is empty.
+ */
+struct commit *graph_pop_lookahead(struct git_graph *graph);
+
+/*
+ * Returns how many more commits can be added to the lookahead buffer.
+ */
+int graph_get_lookahead_room(struct git_graph *graph);
+
+/*
+ * Push a commit into the lookahead buffer. Must only be called when
+ * graph_get_lookahead_room() returns > 0.
+ */
+void graph_push_lookahead(struct git_graph *graph, struct commit *c);
 
 #endif /* GRAPH_H */

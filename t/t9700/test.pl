@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use lib (split(/:/, $ENV{GITPERLLIB}));
 
-use 5.008;
+require v5.26;
 use warnings;
 use strict;
 
@@ -30,6 +30,18 @@ BEGIN { use_ok('Git') }
 # set up
 our $abs_repo_dir = cwd();
 ok(our $r = Git->repository(Directory => "."), "open repository");
+{
+	local $ENV{GIT_TEST_ASSUME_DIFFERENT_OWNER} = 1;
+	my $failed;
+
+	$failed = eval { Git->repository(Directory => $abs_repo_dir) };
+	ok(!$failed, "reject unsafe non-bare repository");
+	like($@, qr/not a git repository/i, "unsafe error message");
+
+	$failed = eval { Git->repository(Directory => "$abs_repo_dir/bare.git") };
+	ok(!$failed, "reject unsafe bare repository");
+	like($@, qr/not a git repository/i, "unsafe error message");
+}
 
 # config
 is($r->config("test.string"), "value", "config scalar: string");
@@ -105,7 +117,12 @@ close TEMPFILE;
 unlink $tmpfile;
 
 # paths
-is($r->repo_path, $abs_repo_dir . "/.git", "repo_path");
+my $abs_git_dir = $abs_repo_dir . "/.git";
+if (defined $ENV{MSYSTEM} && $ENV{MSYSTEM} ne 'MSYS') {
+  $abs_git_dir = `cygpath -am "$abs_repo_dir/.git"`;
+  $abs_git_dir =~ s/\r?\n?$//;
+}
+is($r->repo_path, $abs_git_dir, "repo_path");
 is($r->wc_path, $abs_repo_dir . "/", "wc_path");
 is($r->wc_subdir, "", "wc_subdir initial");
 $r->wc_chdir("directory1");
@@ -115,7 +132,7 @@ is($r->config("test.string"), "value", "config after wc_chdir");
 # Object generation in sub directory
 chdir("directory2");
 my $r2 = Git->repository();
-is($r2->repo_path, $abs_repo_dir . "/.git", "repo_path (2)");
+is($r2->repo_path, $abs_git_dir, "repo_path (2)");
 is($r2->wc_path, $abs_repo_dir . "/", "wc_path (2)");
 is($r2->wc_subdir, "directory2/", "wc_subdir initial (2)");
 
@@ -134,6 +151,11 @@ is($r3->cat_blob($file1hash, \*TEMPFILE3), 15, "cat_blob(outside): size");
 close TEMPFILE3;
 unlink $tmpfile3;
 chdir($abs_repo_dir);
+
+# open alternate bare repo
+my $r4 = Git->repository(Directory => "$abs_repo_dir/bare.git");
+is($r4->command_oneline(qw(log --format=%s)), "bare commit",
+	"log of bare repo works");
 
 # unquoting paths
 is(Git::unquote_path('abc'), 'abc', 'unquote unquoted path');

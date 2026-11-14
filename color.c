@@ -1,8 +1,15 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "config.h"
 #include "color.h"
+#include "editor.h"
+#include "gettext.h"
+#include "hex-ll.h"
+#include "pager.h"
+#include "strbuf.h"
 
-static int git_use_color_default = GIT_COLOR_AUTO;
+static enum git_colorbool git_use_color_default = GIT_COLOR_AUTO;
 int color_stdout_is_tty = -1;
 
 /*
@@ -40,7 +47,7 @@ struct color {
 	enum {
 		COLOR_UNSPECIFIED = 0,
 		COLOR_NORMAL,
-		COLOR_ANSI, /* basic 0-7 ANSI colors */
+		COLOR_ANSI, /* basic 0-7 ANSI colors + "default" (value = 9) */
 		COLOR_256,
 		COLOR_RGB
 	} type;
@@ -59,12 +66,16 @@ static int match_word(const char *word, int len, const char *match)
 	return !strncasecmp(word, match, len) && !match[len];
 }
 
-static int get_hex_color(const char *in, unsigned char *out)
+static int get_hex_color(const char **inp, int width, unsigned char *out)
 {
+	const char *in = *inp;
 	unsigned int val;
-	val = (hexval(in[0]) << 4) | hexval(in[1]);
+
+	assert(width == 1 || width == 2);
+	val = (hexval(in[0]) << 4) | hexval(in[width - 1]);
 	if (val & ~0xff)
 		return -1;
+	*inp += width;
 	*out = val;
 	return 0;
 }
@@ -82,6 +93,27 @@ static int parse_ansi_color(struct color *out, const char *name, int len)
 	};
 	int i;
 	int color_offset = COLOR_FOREGROUND_ANSI;
+
+	if (match_word(name, len, "default")) {
+		/*
+		 * Restores to the terminal's default color, which may not be
+		 * the same as explicitly setting "white" or "black".
+		 *
+		 * ECMA-48 - Control Functions \
+		 *  for Coded Character Sets, 5th edition (June 1991):
+		 * > 39 default display colour (implementation-defined)
+		 * > 49 default background colour (implementation-defined)
+		 *
+		 * Although not supported /everywhere/--according to terminfo,
+		 * some terminals define "op" (original pair) as a blunt
+		 * "set to white on black", or even "send full SGR reset"--
+		 * it's standard and well-supported enough that if a user
+		 * asks for it in their config this will do the right thing.
+		 */
+		out->type = COLOR_ANSI;
+		out->value = 9 + color_offset;
+		return 0;
+	}
 
 	if (strncasecmp(name, "bright", 6) == 0) {
 		color_offset = COLOR_FOREGROUND_BRIGHT_ANSI;
@@ -109,11 +141,14 @@ static int parse_color(struct color *out, const char *name, int len)
 		return 0;
 	}
 
-	/* Try a 24-bit RGB value */
-	if (len == 7 && name[0] == '#') {
-		if (!get_hex_color(name + 1, &out->red) &&
-		    !get_hex_color(name + 3, &out->green) &&
-		    !get_hex_color(name + 5, &out->blue)) {
+	/* Try a 24- or 12-bit RGB value prefixed with '#' */
+	if ((len == 7 || len == 4) && name[0] == '#') {
+		int width_per_color = (len == 7) ? 2 : 1;
+		const char *color = name + 1;
+
+		if (!get_hex_color(&color, width_per_color, &out->red) &&
+		    !get_hex_color(&color, width_per_color, &out->green) &&
+		    !get_hex_color(&color, width_per_color, &out->blue)) {
 			out->type = COLOR_RGB;
 			return 0;
 		}
@@ -188,11 +223,6 @@ static int parse_attr(const char *name, size_t len)
 	return -1;
 }
 
-int color_parse(const char *value, char *dst)
-{
-	return color_parse_mem(value, strlen(value), dst);
-}
-
 /*
  * Write the ANSI color codes for "c" to "out"; the string should
  * already have the ANSI escape code in it. "out" should have enough
@@ -229,11 +259,13 @@ static int color_empty(const struct color *c)
 	return c->type <= COLOR_NORMAL;
 }
 
-int color_parse_mem(const char *value, int value_len, char *dst)
+static int color_parse_mem_1(const char *value, int value_len,
+			     char *dst, int quiet)
 {
 	const char *ptr = value;
 	int len = value_len;
 	char *end = dst + COLOR_MAXLEN;
+	unsigned int has_reset = 0;
 	unsigned int attr = 0;
 	struct color fg = { COLOR_UNSPECIFIED };
 	struct color bg = { COLOR_UNSPECIFIED };
@@ -248,12 +280,7 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 		return 0;
 	}
 
-	if (!strncasecmp(ptr, "reset", len)) {
-		xsnprintf(dst, end - dst, GIT_COLOR_RESET);
-		return 0;
-	}
-
-	/* [fg [bg]] [attr]... */
+	/* [reset] [fg [bg]] [attr]... */
 	while (len > 0) {
 		const char *word = ptr;
 		struct color c = { COLOR_UNSPECIFIED };
@@ -268,6 +295,11 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 		while (len > 0 && isspace(*ptr)) {
 			ptr++;
 			len--;
+		}
+
+		if (match_word(word, wordlen, "reset")) {
+			has_reset = 1;
+			continue;
 		}
 
 		if (!parse_color(&c, word, wordlen)) {
@@ -295,12 +327,15 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 	*dst++ = (x); \
 } while(0)
 
-	if (attr || !color_empty(&fg) || !color_empty(&bg)) {
+	if (has_reset || attr || !color_empty(&fg) || !color_empty(&bg)) {
 		int sep = 0;
 		int i;
 
 		OUT('\033');
 		OUT('[');
+
+		if (has_reset)
+			sep++;
 
 		for (i = 0; attr; i++) {
 			unsigned bit = (1 << i);
@@ -326,33 +361,48 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 	OUT(0);
 	return 0;
 bad:
-	return error(_("invalid color value: %.*s"), value_len, value);
+	return quiet ? -1 : error(_("invalid color value: %.*s"), value_len, value);
 #undef OUT
 }
 
-int git_config_colorbool(const char *var, const char *value)
+int color_parse_mem(const char *value, int value_len, char *dst)
+{
+	return color_parse_mem_1(value, value_len, dst, 0);
+}
+
+int color_parse(const char *value, char *dst)
+{
+	return color_parse_mem(value, strlen(value), dst);
+}
+
+int color_parse_quietly(const char *value, char *dst)
+{
+	return color_parse_mem_1(value, strlen(value), dst, 1);
+}
+
+enum git_colorbool git_config_colorbool(const char *var, const char *value)
 {
 	if (value) {
 		if (!strcasecmp(value, "never"))
-			return 0;
+			return GIT_COLOR_NEVER;
 		if (!strcasecmp(value, "always"))
-			return 1;
+			return GIT_COLOR_ALWAYS;
 		if (!strcasecmp(value, "auto"))
 			return GIT_COLOR_AUTO;
 	}
 
 	if (!var)
-		return -1;
+		return GIT_COLOR_UNKNOWN;
 
 	/* Missing or explicit false to turn off colorization */
 	if (!git_config_bool(var, value))
-		return 0;
+		return GIT_COLOR_NEVER;
 
 	/* any normal truth value defaults to 'auto' */
 	return GIT_COLOR_AUTO;
 }
 
-static int check_auto_color(int fd)
+static bool check_auto_color(int fd)
 {
 	static int color_stderr_is_tty = -1;
 	int *is_tty_p = fd == 1 ? &color_stdout_is_tty : &color_stderr_is_tty;
@@ -360,12 +410,12 @@ static int check_auto_color(int fd)
 		*is_tty_p = isatty(fd);
 	if (*is_tty_p || (fd == 1 && pager_in_use() && pager_use_color)) {
 		if (!is_terminal_dumb())
-			return 1;
+			return true;
 	}
-	return 0;
+	return false;
 }
 
-int want_color_fd(int fd, int var)
+bool want_color_fd(int fd, enum git_colorbool var)
 {
 	/*
 	 * NEEDSWORK: This function is sometimes used from multiple threads, and
@@ -379,7 +429,7 @@ int want_color_fd(int fd, int var)
 	if (fd < 1 || fd >= ARRAY_SIZE(want_auto))
 		BUG("file descriptor out of range: %d", fd);
 
-	if (var < 0)
+	if (var == GIT_COLOR_UNKNOWN)
 		var = git_use_color_default;
 
 	if (var == GIT_COLOR_AUTO) {
@@ -387,10 +437,10 @@ int want_color_fd(int fd, int var)
 			want_auto[fd] = check_auto_color(fd);
 		return want_auto[fd];
 	}
-	return var;
+	return var == GIT_COLOR_ALWAYS;
 }
 
-int git_color_config(const char *var, const char *value, void *cb)
+int git_color_config(const char *var, const char *value, void *cb UNUSED)
 {
 	if (!strcmp(var, "color.ui")) {
 		git_use_color_default = git_config_colorbool(var, value);
@@ -398,14 +448,6 @@ int git_color_config(const char *var, const char *value, void *cb)
 	}
 
 	return 0;
-}
-
-int git_color_default_config(const char *var, const char *value, void *cb)
-{
-	if (git_color_config(var, value, cb) < 0)
-		return -1;
-
-	return git_default_config(var, value, cb);
 }
 
 void color_print_strbuf(FILE *fp, const char *color, const struct strbuf *sb)

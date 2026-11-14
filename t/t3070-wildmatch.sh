@@ -99,6 +99,13 @@ match_with_ls_files() {
 	match_function=$4
 	ls_files_args=$5
 
+	prereqs=EXPENSIVE_ON_WINDOWS
+	case "$pattern" in
+	*\\*)
+		prereqs="$prereqs,BSLASHPSPEC"
+		;;
+	esac
+
 	match_stdout_stderr_cmp="
 		tr -d '\0' <actual.raw >actual &&
 		test_must_be_empty actual.err &&
@@ -108,36 +115,36 @@ match_with_ls_files() {
 	then
 		if test -e .git/created_test_file
 		then
-			test_expect_success EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): match dies on '$pattern' '$text'" "
+			test_expect_success $prereqs "$match_function (via ls-files): match dies on '$pattern' '$text'" "
 				printf '%s' '$text' >expect &&
 				test_must_fail git$ls_files_args ls-files -z -- '$pattern'
 			"
 		else
-			test_expect_failure EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): match skip '$pattern' '$text'" 'false'
+			test_expect_failure $prereqs "$match_function (via ls-files): match skip '$pattern' '$text'" 'false'
 		fi
 	elif test "$match_expect" = 1
 	then
 		if test -e .git/created_test_file
 		then
-			test_expect_success EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): match '$pattern' '$text'" "
+			test_expect_success $prereqs "$match_function (via ls-files): match '$pattern' '$text'" "
 				printf '%s' '$text' >expect &&
 				git$ls_files_args ls-files -z -- '$pattern' >actual.raw 2>actual.err &&
 				$match_stdout_stderr_cmp
 			"
 		else
-			test_expect_failure EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): match skip '$pattern' '$text'" 'false'
+			test_expect_failure $prereqs "$match_function (via ls-files): match skip '$pattern' '$text'" 'false'
 		fi
 	elif test "$match_expect" = 0
 	then
 		if test -e .git/created_test_file
 		then
-			test_expect_success EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): no match '$pattern' '$text'" "
+			test_expect_success $prereqs "$match_function (via ls-files): no match '$pattern' '$text'" "
 				>expect &&
 				git$ls_files_args ls-files -z -- '$pattern' >actual.raw 2>actual.err &&
 				$match_stdout_stderr_cmp
 			"
 		else
-			test_expect_failure EXPENSIVE_ON_WINDOWS "$match_function (via ls-files): no match skip '$pattern' '$text'" 'false'
+			test_expect_failure $prereqs "$match_function (via ls-files): no match skip '$pattern' '$text'" 'false'
 		fi
 	else
 		test_expect_success "PANIC: Test framework error. Unknown matches value $match_expect" 'false'
@@ -187,7 +194,7 @@ match() {
 		file=$(cat .git/expected_test_file) &&
 		if should_create_test_file "$file"
 		then
-			dirs=${file%/*}
+			dirs=${file%/*} &&
 			if test "$file" != "$dirs"
 			then
 				mkdir -p -- "$dirs" &&
@@ -235,6 +242,8 @@ match 1 1 1 1 aaaaaaabababab '*ab'
 match 1 1 1 1 'foo*' 'foo\*'
 match 0 0 0 0 foobar 'foo\*bar'
 match 1 1 1 1 'f\oo' 'f\\oo'
+match 0 0 0 0 \
+      1 1 1 1 'foo\' 'foo\'
 match 1 1 1 1 ball '*[al]?'
 match 0 0 0 0 ten '[ten]'
 match 1 1 1 1 ten '**[!te]'
@@ -429,5 +438,16 @@ match 0 1 0 1 'A' '[B-a]'
 match 1 1 1 1 'a' '[B-a]'
 match 0 1 0 1 'z' '[Z-y]'
 match 1 1 1 1 'Z' '[Z-y]'
+
+test_expect_success 'matching does not exhibit exponential behavior' '
+	{
+		test-tool wildmatch wildmatch \
+			aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab \
+			"*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a" &
+		pid=$!
+	} &&
+	sleep 2 &&
+	! kill $!
+'
 
 test_done

@@ -1,13 +1,19 @@
-#include "cache.h"
-#include "diff.h"
-#include "diffcore.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
 #include "lockfile.h"
+#include "merge.h"
 #include "commit.h"
+#include "repository.h"
+#include "path.h"
 #include "run-command.h"
 #include "resolve-undo.h"
+#include "tree.h"
 #include "tree-walk.h"
 #include "unpack-trees.h"
-#include "dir.h"
 
 static const char *merge_argument(struct commit *commit)
 {
@@ -19,22 +25,22 @@ int try_merge_command(struct repository *r,
 		      const char **xopts, struct commit_list *common,
 		      const char *head_arg, struct commit_list *remotes)
 {
-	struct strvec args = STRVEC_INIT;
-	int i, ret;
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	int ret;
 	struct commit_list *j;
 
-	strvec_pushf(&args, "merge-%s", strategy);
-	for (i = 0; i < xopts_nr; i++)
-		strvec_pushf(&args, "--%s", xopts[i]);
+	strvec_pushf(&cmd.args, "merge-%s", strategy);
+	for (size_t i = 0; i < xopts_nr; i++)
+		strvec_pushf(&cmd.args, "--%s", xopts[i]);
 	for (j = common; j; j = j->next)
-		strvec_push(&args, merge_argument(j->item));
-	strvec_push(&args, "--");
-	strvec_push(&args, head_arg);
+		strvec_push(&cmd.args, merge_argument(j->item));
+	strvec_push(&cmd.args, "--");
+	strvec_push(&cmd.args, head_arg);
 	for (j = remotes; j; j = j->next)
-		strvec_push(&args, merge_argument(j->item));
+		strvec_push(&cmd.args, merge_argument(j->item));
 
-	ret = run_command_v_opt(args.v, RUN_GIT_CMD);
-	strvec_clear(&args);
+	cmd.git_cmd = 1;
+	ret = run_command(&cmd);
 
 	discard_index(r->index);
 	if (repo_read_index(r) < 0)
@@ -53,7 +59,6 @@ int checkout_fast_forward(struct repository *r,
 	struct unpack_trees_options opts;
 	struct tree_desc t[MAX_UNPACK_TREES];
 	int i, nr_trees = 0;
-	struct dir_struct dir;
 	struct lock_file lock_file = LOCK_INIT;
 
 	refresh_index(r->index, REFRESH_QUIET, NULL, NULL, NULL);
@@ -64,28 +69,27 @@ int checkout_fast_forward(struct repository *r,
 	memset(&trees, 0, sizeof(trees));
 	memset(&t, 0, sizeof(t));
 
-	trees[nr_trees] = parse_tree_indirect(head);
+	trees[nr_trees] = repo_parse_tree_indirect(the_repository, head);
 	if (!trees[nr_trees++]) {
 		rollback_lock_file(&lock_file);
 		return -1;
 	}
-	trees[nr_trees] = parse_tree_indirect(remote);
+	trees[nr_trees] = repo_parse_tree_indirect(the_repository, remote);
 	if (!trees[nr_trees++]) {
 		rollback_lock_file(&lock_file);
 		return -1;
 	}
 	for (i = 0; i < nr_trees; i++) {
-		parse_tree(trees[i]);
-		init_tree_desc(t+i, trees[i]->buffer, trees[i]->size);
+		if (repo_parse_tree(the_repository, trees[i]) < 0) {
+			rollback_lock_file(&lock_file);
+			return -1;
+		}
+		init_tree_desc(t+i, &trees[i]->object.oid,
+			       trees[i]->buffer, trees[i]->size);
 	}
 
 	memset(&opts, 0, sizeof(opts));
-	dir_init(&dir);
-	if (overwrite_ignore) {
-		dir.flags |= DIR_SHOW_IGNORED;
-		setup_standard_excludes(&dir);
-		opts.dir = &dir;
-	}
+	opts.preserve_ignored = !overwrite_ignore;
 
 	opts.head_idx = 1;
 	opts.src_index = r->index;
@@ -102,10 +106,74 @@ int checkout_fast_forward(struct repository *r,
 		clear_unpack_trees_porcelain(&opts);
 		return -1;
 	}
-	dir_clear(&dir);
 	clear_unpack_trees_porcelain(&opts);
 
 	if (write_locked_index(r->index, &lock_file, COMMIT_LOCK))
 		return error(_("unable to write new index file"));
 	return 0;
+}
+
+int write_merge_labels(struct repository *r, const char *labels[3])
+{
+	FILE *f = fopen_or_warn(git_path_merge_labels(r), "w");
+
+	if (!f)
+		return -1;
+
+	fprintf(f, "%s\n%s\n%s\n", labels[0], labels[1], labels[2]);
+	if (fclose(f))
+		return error_errno("could not write '%s'",
+				   git_path_merge_labels(r));
+
+	return 0;
+}
+
+static char *parse_merge_label_line(FILE *fp)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	if (strbuf_getline(&buf, fp) == EOF) {
+		strbuf_release(&buf);
+		return NULL;
+	}
+
+	return strbuf_detach(&buf, NULL);
+}
+
+int read_merge_labels(struct repository *r,
+		      char **pbase, char **pours, char **ptheirs)
+{
+	char *base = NULL, *ours = NULL, *theirs = NULL;
+	int ret = -1;
+	FILE *fp = fopen(git_path_merge_labels(r), "r");
+
+	if (!fp)
+		return -1;
+
+	base = parse_merge_label_line(fp);
+	if (!base)
+		goto out;
+
+	ours = parse_merge_label_line(fp);
+	if (!ours)
+		goto out;
+
+	theirs = parse_merge_label_line(fp);
+	if (!theirs)
+		goto out;
+	/* We ignore any trailing lines */
+
+	ret = 0;
+	*pbase = base;
+	*pours = ours;
+	*ptheirs = theirs;
+out:
+	if (ret) {
+		free(base);
+		free(ours);
+		free(theirs);
+	}
+	fclose(fp);
+
+	return ret;
 }

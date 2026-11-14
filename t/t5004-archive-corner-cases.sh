@@ -1,7 +1,14 @@
 #!/bin/sh
 
 test_description='test corner cases of git-archive'
+
 . ./test-lib.sh
+
+if ! test_have_prereq PERL_TEST_HELPERS
+then
+	skip_all='skipping archive corner cases tests; Perl not available'
+	test_done
+fi
 
 # the 10knuls.tar file is used to test for an empty git generated tar
 # without having to invoke tar because an otherwise valid empty GNU tar
@@ -131,7 +138,7 @@ test_expect_success ZIPINFO 'zip archive with many entries' '
 	do
 		for b in 0 1 2 3 4 5 6 7 8 9 a b c d e f
 		do
-			: >00/$a$b
+			: >00/$a$b || return 1
 		done
 	done &&
 	git add 00 &&
@@ -143,7 +150,7 @@ test_expect_success ZIPINFO 'zip archive with many entries' '
 	do
 		for d in 0 1 2 3 4 5 6 7 8 9 a b c d e f
 		do
-			echo "040000 tree $subtree	$c$d"
+			echo "040000 tree $subtree	$c$d" || return 1
 		done
 	done >tree &&
 	tree=$(git mktree <tree) &&
@@ -153,7 +160,8 @@ test_expect_success ZIPINFO 'zip archive with many entries' '
 
 	# check the number of entries in the ZIP file directory
 	expr 65536 + 256 >expect &&
-	"$ZIPINFO" many.zip | head -2 | sed -n "2s/.* //p" >actual &&
+	"$ZIPINFO" -h many.zip >zipinfo &&
+	sed -n "2s/.* //p" <zipinfo >actual &&
 	test_cmp expect actual
 '
 
@@ -168,11 +176,7 @@ test_expect_success EXPENSIVE,UNZIP,UNZIP_ZIP64_SUPPORT \
 	blob=$(echo $s | git hash-object -w --stdin) &&
 
 	# create tree containing 65500 entries of that blob
-	for i in $(test_seq 1 65500)
-	do
-		echo "100644 blob $blob	$i"
-	done >tree &&
-	tree=$(git mktree <tree) &&
+	tree=$(test_seq -f "100644 blob $blob\t%d" 1 65500 | git mktree) &&
 
 	# zip it, creating an archive a bit bigger than 4GB
 	git archive -0 -o many-big.zip $tree &&
@@ -183,25 +187,31 @@ test_expect_success EXPENSIVE,UNZIP,UNZIP_ZIP64_SUPPORT \
 
 test_expect_success EXPENSIVE,LONG_IS_64BIT,UNZIP,UNZIP_ZIP64_SUPPORT,ZIPINFO \
 	'zip archive with files bigger than 4GB' '
-	# Pack created with:
-	#   dd if=/dev/zero of=file bs=1M count=4100 && git hash-object -w file
-	mkdir -p .git/objects/pack &&
+	test_when_finished rm -rf big-file &&
+	git init --object-format=sha1 big-file &&
 	(
-		cd .git/objects/pack &&
-		"$GIT_UNZIP" "$TEST_DIRECTORY"/t5004/big-pack.zip
-	) &&
-	blob=754a93d6fada4c6873360e6cb4b209132271ab0e &&
-	size=$(expr 4100 "*" 1024 "*" 1024) &&
+		cd big-file &&
 
-	# create a tree containing the file
-	tree=$(echo "100644 blob $blob	big-file" | git mktree) &&
+		# Pack created with:
+		#   dd if=/dev/zero of=file bs=1M count=4100 && git hash-object -w file
+		mkdir -p .git/objects/pack &&
+		(
+			cd .git/objects/pack &&
+			"$GIT_UNZIP" "$TEST_DIRECTORY"/t5004/big-pack.zip
+		) &&
+		blob=754a93d6fada4c6873360e6cb4b209132271ab0e &&
+		size=$(expr 4100 "*" 1024 "*" 1024) &&
 
-	# zip it, creating an archive with a file bigger than 4GB
-	git archive -o big.zip $tree &&
+		# create a tree containing the file
+		tree=$(echo "100644 blob $blob	big-file" | git mktree) &&
 
-	"$GIT_UNZIP" -t big.zip &&
-	"$ZIPINFO" big.zip >big.lst &&
-	grep $size big.lst
+		# zip it, creating an archive with a file bigger than 4GB
+		git archive -o big.zip $tree &&
+
+		"$GIT_UNZIP" -t big.zip &&
+		"$ZIPINFO" big.zip >big.lst &&
+		test_grep $size big.lst
+	)
 '
 
 build_tree() {
@@ -221,6 +231,34 @@ test_expect_success 'tar archive with long paths' '
 	blob=$(echo foo | git hash-object -w --stdin) &&
 	tree=$(build_tree $blob | git mktree) &&
 	git archive -o long_paths.tar $tree
+'
+
+test_lazy_prereq ZIPINFO_UT_EXTRA '
+	"$ZIPINFO" -v "$TEST_DIRECTORY"/t5004/big-pack.zip |
+	grep "UT extra field modtime"
+'
+
+test_expect_success TIME_IS_64BIT 'zip archive with 32-bit mtime' '
+	blob=$(echo foo | git hash-object -w --stdin) &&
+	tree=$(printf "100644 blob $blob\tfile" | git mktree) &&
+	git archive --mtime="@2147483647 +0000" -o with_ut_extra.zip $tree
+'
+
+test_expect_success TIME_IS_64BIT,TIME_T_IS_64BIT 'zip archive with mtime exceeding 32-bit' '
+	blob=$(echo foo | git hash-object -w --stdin) &&
+	tree=$(printf "100644 blob $blob\tfile" | git mktree) &&
+	git archive --mtime="@2147483648 +0000" -o without_ut_extra.zip $tree
+'
+
+test_expect_success TIME_IS_64BIT,ZIPINFO_UT_EXTRA 'UT extra field' '
+	"$ZIPINFO" -v with_ut_extra.zip >actual &&
+	test_grep "UT extra field modtime" actual
+'
+
+test_expect_success TIME_IS_64BIT,TIME_T_IS_64BIT,ZIPINFO_UT_EXTRA \
+	'UT extra field omitted when mtime exceeds 32-bit' '
+	"$ZIPINFO" -v without_ut_extra.zip >actual &&
+	test_grep ! "UT extra field modtime" actual
 '
 
 test_done

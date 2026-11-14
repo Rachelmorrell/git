@@ -1,12 +1,16 @@
 #ifndef SHALLOW_H
 #define SHALLOW_H
 
+#include "commit.h"
 #include "lockfile.h"
 #include "object.h"
 #include "repository.h"
 #include "strbuf.h"
 
-void set_alternate_shallow_file(struct repository *r, const char *path, int override);
+struct oid_array;
+struct strvec;
+
+void set_alternate_shallow_file(struct repository *r, const char *path);
 int register_shallow(struct repository *r, const struct object_id *oid);
 int unregister_shallow(const struct object_id *oid);
 int is_repository_shallow(struct repository *r);
@@ -23,17 +27,21 @@ int is_repository_shallow(struct repository *r);
 struct shallow_lock {
 	struct lock_file lock;
 };
-#define SHALLOW_LOCK_INIT { LOCK_INIT }
+#define SHALLOW_LOCK_INIT { \
+	.lock = LOCK_INIT, \
+}
 
 /* commit $GIT_DIR/shallow and reset stat-validity checks */
 int commit_shallow_file(struct repository *r, struct shallow_lock *lk);
 /* rollback $GIT_DIR/shallow and reset stat-validity checks */
 void rollback_shallow_file(struct repository *r, struct shallow_lock *lk);
 
+int get_shallows_depth(struct object_array *heads, struct object_array *shallows);
 struct commit_list *get_shallow_commits(struct object_array *heads,
+					struct object_array *shallows, int deepen_relative,
 					int depth, int shallow_flag, int not_shallow_flag);
-struct commit_list *get_shallow_commits_by_rev_list(
-		int ac, const char **av, int shallow_flag, int not_shallow_flag);
+struct commit_list *get_shallow_commits_by_rev_list(struct strvec *argv,
+						    int shallow_flag, int not_shallow_flag);
 int write_shallow_commits(struct strbuf *out, int use_pack_protocol,
 			  const struct oid_array *extra);
 
@@ -55,8 +63,8 @@ void prune_shallow(unsigned options);
  */
 struct shallow_info {
 	struct oid_array *shallow;
-	int *ours, nr_ours;
-	int *theirs, nr_theirs;
+	size_t *ours, nr_ours;
+	size_t *theirs, nr_theirs;
 	struct oid_array *ref;
 
 	/* for receive-pack */
@@ -64,8 +72,7 @@ struct shallow_info {
 	int *need_reachability_test;
 	int *reachable;
 	int *shallow_ref;
-	struct commit **commits;
-	int nr_commits;
+	struct commit_stack commits;
 };
 
 void prepare_shallow_info(struct shallow_info *, struct oid_array *);

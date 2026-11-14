@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='support for reading config from a blob'
+
 . ./test-lib.sh
 
 test_expect_success 'create config blob' '
@@ -61,13 +62,32 @@ test_expect_success 'parse errors in blobs are properly attributed' '
 	git commit -m broken &&
 
 	test_must_fail git config --blob=HEAD:config some.value 2>err &&
-	test_i18ngrep "HEAD:config" err
+	test_grep "HEAD:config" err
 '
 
 test_expect_success 'can parse blob ending with CR' '
-	printf "[some]key = value\\r" >config &&
-	git add config &&
-	git commit -m CR &&
+	test_commit --printf CR config "[some]key = value\\r" &&
+	echo value >expect &&
+	git config --blob=HEAD:config some.key >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'a byte 0xff does not end a blob' '
+	test_commit --printf FF config "# caf\\377\\n[some]\\n\\tkey = value\\n" &&
+	echo value >expect &&
+	git config --blob=HEAD:config some.key >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'a byte 0xff after a CR in a blob' '
+	test_commit --printf CRFF config "# a\\r\\377\\n[some]\\n\\tkey = value\\n" &&
+	echo value >expect &&
+	git config --blob=HEAD:config some.key >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'can parse blob starting with a byte order mark' '
+	test_commit --printf BOM config "\\357\\273\\277[some]\\n\\tkey = value\\n" &&
 	echo value >expect &&
 	git config --blob=HEAD:config some.key >actual &&
 	test_cmp expect actual

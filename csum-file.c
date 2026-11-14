@@ -7,39 +7,40 @@
  * files. Useful when you write a file that you want to be
  * able to verify hasn't been messed with afterwards.
  */
-#include "cache.h"
-#include "progress.h"
+
+#include "git-compat-util.h"
 #include "csum-file.h"
+#include "git-zlib.h"
+#include "hash.h"
+#include "progress.h"
+
+static void verify_buffer_or_die(struct hashfile *f,
+				 const void *buf,
+				 unsigned int count)
+{
+	ssize_t ret = read_in_full(f->check_fd, f->check_buffer, count);
+
+	if (ret < 0)
+		die_errno("%s: sha1 file read error", f->name);
+	if ((size_t)ret != count)
+		die("%s: sha1 file truncated", f->name);
+	if (memcmp(buf, f->check_buffer, count))
+		die("sha1 file '%s' validation error", f->name);
+}
 
 static void flush(struct hashfile *f, const void *buf, unsigned int count)
 {
-	if (0 <= f->check_fd && count)  {
-		unsigned char check_buffer[8192];
-		ssize_t ret = read_in_full(f->check_fd, check_buffer, count);
+	if (0 <= f->check_fd && count)
+		verify_buffer_or_die(f, buf, count);
 
-		if (ret < 0)
-			die_errno("%s: sha1 file read error", f->name);
-		if (ret != count)
-			die("%s: sha1 file truncated", f->name);
-		if (memcmp(buf, check_buffer, count))
-			die("sha1 file '%s' validation error", f->name);
-	}
-
-	for (;;) {
-		int ret = xwrite(f->fd, buf, count);
-		if (ret > 0) {
-			f->total += ret;
-			display_throughput(f->tp, f->total);
-			buf = (char *) buf + ret;
-			count -= ret;
-			if (count)
-				continue;
-			return;
-		}
-		if (!ret)
+	if (write_in_full(f->fd, buf, count) < 0) {
+		if (errno == ENOSPC)
 			die("sha1 file '%s' write error. Out of diskspace", f->name);
 		die_errno("sha1 file '%s' write error", f->name);
 	}
+
+	f->total += count;
+	display_throughput(f->tp, f->total);
 }
 
 void hashflush(struct hashfile *f)
@@ -47,24 +48,39 @@ void hashflush(struct hashfile *f)
 	unsigned offset = f->offset;
 
 	if (offset) {
-		the_hash_algo->update_fn(&f->ctx, f->buffer, offset);
+		if (!f->skip_hash)
+			git_hash_update(&f->ctx, f->buffer, offset);
 		flush(f, f->buffer, offset);
 		f->offset = 0;
 	}
 }
 
-int finalize_hashfile(struct hashfile *f, unsigned char *result, unsigned int flags)
+void free_hashfile(struct hashfile *f)
+{
+	git_hash_discard(&f->ctx);
+	free(f->buffer);
+	free(f->check_buffer);
+	free(f);
+}
+
+int finalize_hashfile(struct hashfile *f, unsigned char *result,
+		      enum fsync_component component, unsigned int flags)
 {
 	int fd;
 
 	hashflush(f);
-	the_hash_algo->final_fn(f->buffer, &f->ctx);
+
+	if (f->skip_hash)
+		hashclr(f->buffer, f->algop);
+	else
+		git_hash_final(f->buffer, &f->ctx);
+
 	if (result)
-		hashcpy(result, f->buffer);
+		hashcpy(result, f->buffer, f->algop);
 	if (flags & CSUM_HASH_IN_STREAM)
-		flush(f, f->buffer, the_hash_algo->rawsz);
+		flush(f, f->buffer, f->algop->rawsz);
 	if (flags & CSUM_FSYNC)
-		fsync_or_die(f->fd, f->name);
+		fsync_component_or_die(component, f->fd, f->name);
 	if (flags & CSUM_CLOSE) {
 		if (close(f->fd))
 			die_errno("%s: sha1 file error on close", f->name);
@@ -82,82 +98,109 @@ int finalize_hashfile(struct hashfile *f, unsigned char *result, unsigned int fl
 		if (close(f->check_fd))
 			die_errno("%s: sha1 file error on close", f->name);
 	}
-	free(f);
+	free_hashfile(f);
 	return fd;
 }
 
-void hashwrite(struct hashfile *f, const void *buf, unsigned int count)
+void hashwrite(struct hashfile *f, const void *buf, uint32_t count)
 {
 	while (count) {
-		unsigned offset = f->offset;
-		unsigned left = sizeof(f->buffer) - offset;
+		unsigned left = f->buffer_len - f->offset;
 		unsigned nr = count > left ? left : count;
-		const void *data;
 
 		if (f->do_crc)
 			f->crc32 = crc32(f->crc32, buf, nr);
 
-		if (nr == sizeof(f->buffer)) {
-			/* process full buffer directly without copy */
-			data = buf;
+		if (nr == f->buffer_len) {
+			/*
+			 * Flush a full batch worth of data directly
+			 * from the input, skipping the memcpy() to
+			 * the hashfile's buffer. In this block,
+			 * f->offset is necessarily zero.
+			 */
+			if (!f->skip_hash)
+				git_hash_update(&f->ctx, buf, nr);
+			flush(f, buf, nr);
 		} else {
-			memcpy(f->buffer + offset, buf, nr);
-			data = f->buffer;
+			/*
+			 * Copy to the hashfile's buffer, flushing only
+			 * if it became full.
+			 */
+			memcpy(f->buffer + f->offset, buf, nr);
+			f->offset += nr;
+			left -= nr;
+			if (!left)
+				hashflush(f);
 		}
 
 		count -= nr;
-		offset += nr;
 		buf = (char *) buf + nr;
-		left -= nr;
-		if (!left) {
-			the_hash_algo->update_fn(&f->ctx, data, offset);
-			flush(f, data, offset);
-			offset = 0;
-		}
-		f->offset = offset;
 	}
 }
 
-struct hashfile *hashfd(int fd, const char *name)
-{
-	return hashfd_throughput(fd, name, NULL);
-}
-
-struct hashfile *hashfd_check(const char *name)
+struct hashfile *hashfd_check(const struct git_hash_algo *algop,
+			      const char *name)
 {
 	int sink, check;
 	struct hashfile *f;
 
-	sink = open("/dev/null", O_WRONLY);
-	if (sink < 0)
-		die_errno("unable to open /dev/null");
-	check = open(name, O_RDONLY);
-	if (check < 0)
-		die_errno("unable to open '%s'", name);
-	f = hashfd(sink, name);
+	sink = xopen("/dev/null", O_WRONLY);
+	check = xopen(name, O_RDONLY);
+	f = hashfd(algop, sink, name);
 	f->check_fd = check;
+	f->check_buffer = xmalloc(f->buffer_len);
+
 	return f;
 }
 
-struct hashfile *hashfd_throughput(int fd, const char *name, struct progress *tp)
+struct hashfile *hashfd_ext(const struct git_hash_algo *algop,
+			    int fd, const char *name,
+			    const struct hashfd_options *opts)
 {
 	struct hashfile *f = xmalloc(sizeof(*f));
 	f->fd = fd;
 	f->check_fd = -1;
 	f->offset = 0;
 	f->total = 0;
-	f->tp = tp;
+	f->tp = opts->progress;
 	f->name = name;
 	f->do_crc = 0;
-	the_hash_algo->init_fn(&f->ctx);
+	f->skip_hash = 0;
+
+	f->algop = unsafe_hash_algo(algop);
+	git_hash_init(&f->ctx, f->algop);
+
+	f->buffer_len = opts->buffer_len ? opts->buffer_len : DEFAULT_IO_BUFFER_SIZE;
+	f->buffer = xmalloc(f->buffer_len);
+	f->check_buffer = NULL;
+
 	return f;
+}
+
+struct hashfile *hashfd(const struct git_hash_algo *algop,
+			int fd, const char *name)
+{
+	/*
+	 * Since we are not going to use a progress meter to
+	 * measure the rate of data passing through this hashfile,
+	 * use a larger buffer size to reduce fsync() calls.
+	 */
+	struct hashfd_options opts = { 0 };
+	return hashfd_ext(algop, fd, name, &opts);
+}
+
+void hashfile_checkpoint_init(struct hashfile *f,
+			      struct hashfile_checkpoint *checkpoint)
+{
+	memset(checkpoint, 0, sizeof(*checkpoint));
+	git_hash_init(&checkpoint->ctx, f->algop);
 }
 
 void hashfile_checkpoint(struct hashfile *f, struct hashfile_checkpoint *checkpoint)
 {
 	hashflush(f);
 	checkpoint->offset = f->total;
-	the_hash_algo->clone_fn(&checkpoint->ctx, &f->ctx);
+	git_hash_clone(&checkpoint->ctx, &f->ctx);
 }
 
 int hashfile_truncate(struct hashfile *f, struct hashfile_checkpoint *checkpoint)
@@ -168,9 +211,14 @@ int hashfile_truncate(struct hashfile *f, struct hashfile_checkpoint *checkpoint
 	    lseek(f->fd, offset, SEEK_SET) != offset)
 		return -1;
 	f->total = offset;
-	f->ctx = checkpoint->ctx;
+	git_hash_clone(&f->ctx, &checkpoint->ctx);
 	f->offset = 0; /* hashflush() was called in checkpoint */
 	return 0;
+}
+
+void hashfile_checkpoint_release(struct hashfile_checkpoint *checkpoint)
+{
+	git_hash_discard(&checkpoint->ctx);
 }
 
 void crc32_begin(struct hashfile *f)
@@ -183,4 +231,23 @@ uint32_t crc32_end(struct hashfile *f)
 {
 	f->do_crc = 0;
 	return f->crc32;
+}
+
+int hashfile_checksum_valid(const struct git_hash_algo *algop,
+			    const unsigned char *data, size_t total_len)
+{
+	unsigned char got[GIT_MAX_RAWSZ];
+	struct git_hash_ctx ctx;
+	size_t data_len = total_len - algop->rawsz;
+
+	algop = unsafe_hash_algo(algop);
+
+	if (total_len < algop->rawsz)
+		return 0; /* say "too short"? */
+
+	git_hash_init(&ctx, algop);
+	git_hash_update(&ctx, data, data_len);
+	git_hash_final(got, &ctx);
+
+	return hasheq(got, data + data_len, algop);
 }

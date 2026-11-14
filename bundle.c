@@ -1,7 +1,12 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "lockfile.h"
 #include "bundle.h"
-#include "object-store.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "odb.h"
 #include "repository.h"
 #include "object.h"
 #include "commit.h"
@@ -11,7 +16,16 @@
 #include "run-command.h"
 #include "refs.h"
 #include "strvec.h"
+#include "list-objects-filter-options.h"
+#include "connected.h"
+#include "write-or-die.h"
 
+/*
+ * NEEDSWORK: this function implicitly depends on `the_repository` and is not
+ * available because we dropped USE_THE_REPOSITORY_VARIABLE. We can remove the
+ * declaration once it's accessible via `repo_config_values`.
+ */
+extern const char *get_log_output_encoding(void);
 
 static const char v2_bundle_signature[] = "# v2 git bundle\n";
 static const char v3_bundle_signature[] = "# v3 git bundle\n";
@@ -23,13 +37,17 @@ static struct {
 	{ 3, v3_bundle_signature },
 };
 
-static void add_to_ref_list(const struct object_id *oid, const char *name,
-		struct ref_list *list)
+void bundle_header_init(struct bundle_header *header)
 {
-	ALLOC_GROW(list->list, list->nr + 1, list->alloc);
-	oidcpy(&list->list[list->nr].oid, oid);
-	list->list[list->nr].name = xstrdup(name);
-	list->nr++;
+	struct bundle_header blank = BUNDLE_HEADER_INIT;
+	memcpy(header, &blank, sizeof(*header));
+}
+
+void bundle_header_release(struct bundle_header *header)
+{
+	string_list_clear(&header->prerequisites, 1);
+	string_list_clear(&header->references, 1);
+	list_objects_filter_release(&header->filter);
 }
 
 static int parse_capability(struct bundle_header *header, const char *capability)
@@ -40,6 +58,10 @@ static int parse_capability(struct bundle_header *header, const char *capability
 		if (algo == GIT_HASH_UNKNOWN)
 			return error(_("unrecognized bundle hash algorithm: %s"), arg);
 		header->hash_algo = &hash_algos[algo];
+		return 0;
+	}
+	if (skip_prefix(capability, "filter=", &arg)) {
+		parse_list_objects_filter(&header->filter, arg);
 		return 0;
 	}
 	return error(_("unknown capability '%s'"), capability);
@@ -58,8 +80,8 @@ static int parse_bundle_signature(struct bundle_header *header, const char *line
 	return -1;
 }
 
-static int parse_bundle_header(int fd, struct bundle_header *header,
-			       const char *report_path)
+int read_bundle_header_fd(int fd, struct bundle_header *header,
+			  const char *report_path)
 {
 	struct strbuf buf = STRBUF_INIT;
 	int status = 0;
@@ -74,7 +96,12 @@ static int parse_bundle_header(int fd, struct bundle_header *header,
 		goto abort;
 	}
 
-	header->hash_algo = the_hash_algo;
+	/*
+	 * The default hash format for bundles is SHA1, unless told otherwise
+	 * by an "object-format=" capability, which is being handled in
+	 * `parse_capability()`.
+	 */
+	header->hash_algo = &hash_algos[GIT_HASH_SHA1_LEGACY];
 
 	/* The bundle header ends with an empty line */
 	while (!strbuf_getwholeline_fd(&buf, fd, '\n') &&
@@ -112,10 +139,11 @@ static int parse_bundle_header(int fd, struct bundle_header *header,
 			status = -1;
 			break;
 		} else {
+			struct object_id *dup = oiddup(&oid);
 			if (is_prereq)
-				add_to_ref_list(&oid, "", &header->prerequisites);
+				string_list_append(&header->prerequisites, "")->util = dup;
 			else
-				add_to_ref_list(&oid, p + 1, &header->references);
+				string_list_append(&header->references, p + 1)->util = dup;
 		}
 	}
 
@@ -134,38 +162,43 @@ int read_bundle_header(const char *path, struct bundle_header *header)
 
 	if (fd < 0)
 		return error(_("could not open '%s'"), path);
-	return parse_bundle_header(fd, header, path);
+	return read_bundle_header_fd(fd, header, path);
 }
 
 int is_bundle(const char *path, int quiet)
 {
-	struct bundle_header header;
+	struct bundle_header header = BUNDLE_HEADER_INIT;
 	int fd = open(path, O_RDONLY);
 
 	if (fd < 0)
 		return 0;
-	memset(&header, 0, sizeof(header));
-	fd = parse_bundle_header(fd, &header, quiet ? NULL : path);
+	fd = read_bundle_header_fd(fd, &header, quiet ? NULL : path);
 	if (fd >= 0)
 		close(fd);
+	bundle_header_release(&header);
 	return (fd >= 0);
 }
 
-static int list_refs(struct ref_list *r, int argc, const char **argv)
+static int list_refs(struct string_list *r, int argc, const char **argv)
 {
 	int i;
 
 	for (i = 0; i < r->nr; i++) {
+		struct object_id *oid;
+		const char *name;
+
 		if (argc > 1) {
 			int j;
 			for (j = 1; j < argc; j++)
-				if (!strcmp(r->list[i].name, argv[j]))
+				if (!strcmp(r->items[i].string, argv[j]))
 					break;
 			if (j == argc)
 				continue;
 		}
-		printf("%s %s\n", oid_to_hex(&r->list[i].oid),
-				r->list[i].name);
+
+		oid = r->items[i].util;
+		name = r->items[i].string;
+		printf("%s %s\n", oid_to_hex(oid), name);
 	}
 	return 0;
 }
@@ -173,89 +206,92 @@ static int list_refs(struct ref_list *r, int argc, const char **argv)
 /* Remember to update object flag allocation in object.h */
 #define PREREQ_MARK (1u<<16)
 
+struct string_list_iterator {
+	struct string_list *list;
+	size_t cur;
+};
+
+static const struct object_id *iterate_ref_map(void *cb_data)
+{
+	struct string_list_iterator *iter = cb_data;
+
+	if (iter->cur >= iter->list->nr)
+		return NULL;
+
+	return iter->list->items[iter->cur++].util;
+}
+
 int verify_bundle(struct repository *r,
 		  struct bundle_header *header,
-		  int verbose)
+		  enum verify_bundle_flags flags)
 {
 	/*
 	 * Do fast check, then if any prereqs are missing then go line by line
 	 * to be verbose about the errors
 	 */
-	struct ref_list *p = &header->prerequisites;
-	struct rev_info revs;
-	const char *argv[] = {NULL, "--all", NULL};
-	struct commit *commit;
-	int i, ret = 0, req_nr;
+	struct string_list *p = &header->prerequisites;
+	int i, ret = 0;
 	const char *message = _("Repository lacks these prerequisite commits:");
+	struct string_list_iterator iter = {
+		.list = p,
+	};
+	struct check_connected_options opts = {
+		.quiet = 1,
+	};
 
-	if (!r || !r->objects || !r->objects->odb)
+	if (!r || !r->objects || !r->objects->source)
 		return error(_("need a repository to verify a bundle"));
 
-	repo_init_revisions(r, &revs, NULL);
 	for (i = 0; i < p->nr; i++) {
-		struct ref_list_entry *e = p->list + i;
-		struct object *o = parse_object(r, &e->oid);
-		if (o) {
-			o->flags |= PREREQ_MARK;
-			add_pending_object(&revs, o, e->name);
+		struct string_list_item *e = p->items + i;
+		const char *name = e->string;
+		struct object_id *oid = e->util;
+		struct object *o = parse_object(r, oid);
+		if (o)
 			continue;
-		}
-		if (++ret == 1)
-			error("%s", message);
-		error("%s %s", oid_to_hex(&e->oid), e->name);
-	}
-	if (revs.pending.nr != p->nr)
-		return ret;
-	req_nr = revs.pending.nr;
-	setup_revisions(2, argv, &revs, NULL);
-
-	if (prepare_revision_walk(&revs))
-		die(_("revision walk setup failed"));
-
-	i = req_nr;
-	while (i && (commit = get_revision(&revs)))
-		if (commit->object.flags & PREREQ_MARK)
-			i--;
-
-	for (i = 0; i < p->nr; i++) {
-		struct ref_list_entry *e = p->list + i;
-		struct object *o = parse_object(r, &e->oid);
-		assert(o); /* otherwise we'd have returned early */
-		if (o->flags & SHOWN)
+		ret++;
+		if (flags & VERIFY_BUNDLE_QUIET)
 			continue;
-		if (++ret == 1)
+		if (ret == 1)
 			error("%s", message);
-		error("%s %s", oid_to_hex(&e->oid), e->name);
+		error("%s %s", oid_to_hex(oid), name);
 	}
+	if (ret)
+		goto cleanup;
 
-	/* Clean up objects used, as they will be reused. */
-	for (i = 0; i < p->nr; i++) {
-		struct ref_list_entry *e = p->list + i;
-		commit = lookup_commit_reference_gently(r, &e->oid, 1);
-		if (commit)
-			clear_commit_marks(commit, ALL_REV_FLAGS);
-	}
+	if ((ret = check_connected(r, iterate_ref_map, &iter, &opts)))
+		error(_("some prerequisite commits exist in the object store, "
+			"but are not connected to the repository's history"));
 
-	if (verbose) {
-		struct ref_list *r;
+	/* TODO: preserve this verbose language. */
+	if (flags & VERIFY_BUNDLE_VERBOSE) {
+		struct string_list *r;
 
 		r = &header->references;
 		printf_ln(Q_("The bundle contains this ref:",
-			     "The bundle contains these %d refs:",
+			     "The bundle contains these %"PRIuMAX" refs:",
 			     r->nr),
-			  r->nr);
+			  (uintmax_t)r->nr);
 		list_refs(r, 0, NULL);
+
 		r = &header->prerequisites;
 		if (!r->nr) {
 			printf_ln(_("The bundle records a complete history."));
 		} else {
 			printf_ln(Q_("The bundle requires this ref:",
-				     "The bundle requires these %d refs:",
+				     "The bundle requires these %"PRIuMAX" refs:",
 				     r->nr),
-				  r->nr);
+				  (uintmax_t)r->nr);
 			list_refs(r, 0, NULL);
 		}
+
+		printf_ln(_("The bundle uses this hash algorithm: %s"),
+			  header->hash_algo->name);
+		if (header->filter.choice)
+			printf_ln(_("The bundle uses this filter: %s"),
+				  list_objects_filter_spec(&header->filter));
 	}
+cleanup:
 	return ret;
 }
 
@@ -264,9 +300,10 @@ int list_bundle_refs(struct bundle_header *header, int argc, const char **argv)
 	return list_refs(&header->references, argc, argv);
 }
 
-static int is_tag_in_date_range(struct object *tag, struct rev_info *revs)
+static int is_tag_in_date_range(struct repository *repo,
+				struct object *tag, struct rev_info *revs)
 {
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 	char *buf = NULL, *line, *lineend;
 	timestamp_t date;
@@ -275,7 +312,7 @@ static int is_tag_in_date_range(struct object *tag, struct rev_info *revs)
 	if (revs->max_age == -1 && revs->min_age == -1)
 		goto out;
 
-	buf = read_object_file(&tag->oid, &type, &size);
+	buf = odb_read_object(repo->objects, &tag->oid, &type, &size);
 	if (!buf)
 		goto out;
 	line = memmem(buf, size, "\ntagger ", 8);
@@ -295,89 +332,52 @@ out:
 
 
 /* Write the pack data to bundle_fd */
-static int write_pack_data(int bundle_fd, struct rev_info *revs, struct strvec *pack_options)
+static int write_pack_data(int bundle_fd, struct rev_info *revs, int progress)
 {
-	struct child_process pack_objects = CHILD_PROCESS_INIT;
+	struct odb_generate_pack_options opts = ODB_GENERATE_PACK_OPTIONS_INIT;
+	struct odb_pack_generator *generator;
+	int ret = 0;
 	int i;
 
-	strvec_pushl(&pack_objects.args,
-		     "pack-objects",
-		     "--stdout", "--thin", "--delta-base-offset",
-		     NULL);
-	strvec_pushv(&pack_objects.args, pack_options->v);
-	pack_objects.in = -1;
-	pack_objects.out = bundle_fd;
-	pack_objects.git_cmd = 1;
+	opts.thin = 1;
+	opts.ofs_delta = 1;
+	if (progress)
+		opts.progress = ODB_GENERATE_PACK_PROGRESS_VERBOSE;
+	if (revs->filter.choice)
+		opts.filter_spec = list_objects_filter_spec(&revs->filter);
 
 	/*
-	 * start_command() will close our descriptor if it's >1. Duplicate it
-	 * to avoid surprising the caller.
+	 * The pack generator will consume our descriptor if it's >1.
+	 * Duplicate it to avoid surprising the caller.
 	 */
-	if (pack_objects.out > 1) {
-		pack_objects.out = dup(pack_objects.out);
-		if (pack_objects.out < 0) {
-			error_errno(_("unable to dup bundle descriptor"));
-			child_process_clear(&pack_objects);
-			return -1;
-		}
+	opts.pack_fd = bundle_fd;
+	if (opts.pack_fd > 1) {
+		opts.pack_fd = dup(bundle_fd);
+		if (opts.pack_fd < 0)
+			return error_errno(_("unable to dup bundle descriptor"));
 	}
-
-	if (start_command(&pack_objects))
-		return error(_("Could not spawn pack-objects"));
 
 	for (i = 0; i < revs->pending.nr; i++) {
 		struct object *object = revs->pending.objects[i].item;
 		if (object->flags & UNINTERESTING)
-			write_or_die(pack_objects.in, "^", 1);
-		write_or_die(pack_objects.in, oid_to_hex(&object->oid), the_hash_algo->hexsz);
-		write_or_die(pack_objects.in, "\n", 1);
+			oid_array_append(&opts.haves, &object->oid);
+		else
+			oid_array_append(&opts.wants, &object->oid);
 	}
-	close(pack_objects.in);
-	if (finish_command(&pack_objects))
-		return error(_("pack-objects died"));
-	return 0;
-}
 
-static int compute_and_write_prerequisites(int bundle_fd,
-					   struct rev_info *revs,
-					   int argc, const char **argv)
-{
-	struct child_process rls = CHILD_PROCESS_INIT;
-	struct strbuf buf = STRBUF_INIT;
-	FILE *rls_fout;
-	int i;
-
-	strvec_pushl(&rls.args,
-		     "rev-list", "--boundary", "--pretty=oneline",
-		     NULL);
-	for (i = 1; i < argc; i++)
-		strvec_push(&rls.args, argv[i]);
-	rls.out = -1;
-	rls.git_cmd = 1;
-	if (start_command(&rls))
-		return -1;
-	rls_fout = xfdopen(rls.out, "r");
-	while (strbuf_getwholeline(&buf, rls_fout, '\n') != EOF) {
-		struct object_id oid;
-		if (buf.len > 0 && buf.buf[0] == '-') {
-			write_or_die(bundle_fd, buf.buf, buf.len);
-			if (!get_oid_hex(buf.buf + 1, &oid)) {
-				struct object *object = parse_object_or_die(&oid,
-									    buf.buf);
-				object->flags |= UNINTERESTING;
-				add_pending_object(revs, object, buf.buf);
-			}
-		} else if (!get_oid_hex(buf.buf, &oid)) {
-			struct object *object = parse_object_or_die(&oid,
-								    buf.buf);
-			object->flags |= SHOWN;
-		}
+	if (odb_generate_pack(revs->repo->objects, &generator, &opts)) {
+		ret = error(_("Could not spawn pack-objects"));
+		goto out;
 	}
-	strbuf_release(&buf);
-	fclose(rls_fout);
-	if (finish_command(&rls))
-		return error(_("rev-list died"));
-	return 0;
+
+	if (odb_pack_generator_finish(generator)) {
+		ret = error(_("pack-objects died"));
+		goto out;
+	}
+
+out:
+	odb_generate_pack_options_release(&opts);
+	return ret;
 }
 
 /*
@@ -393,6 +393,7 @@ static int write_bundle_refs(int bundle_fd, struct rev_info *revs)
 {
 	int i;
 	int ref_count = 0;
+	struct strset objects = STRSET_INIT;
 
 	for (i = 0; i < revs->pending.nr; i++) {
 		struct object_array_entry *e = revs->pending.objects + i;
@@ -403,14 +404,18 @@ static int write_bundle_refs(int bundle_fd, struct rev_info *revs)
 
 		if (e->item->flags & UNINTERESTING)
 			continue;
-		if (dwim_ref(e->name, strlen(e->name), &oid, &ref, 0) != 1)
+		if (repo_dwim_ref(revs->repo, e->name, strlen(e->name),
+				  &oid, &ref, 0) != 1)
 			goto skip_write_ref;
-		if (read_ref_full(e->name, RESOLVE_REF_READING, &oid, &flag))
+		if (refs_read_ref_full(get_main_ref_store(revs->repo), e->name, RESOLVE_REF_READING, &oid, &flag))
 			flag = 0;
 		display_ref = (flag & REF_ISSYMREF) ? e->name : ref;
 
+		if (strset_contains(&objects, display_ref))
+			goto skip_write_ref;
+
 		if (e->item->type == OBJ_TAG &&
-				!is_tag_in_date_range(e->item, revs)) {
+				!is_tag_in_date_range(revs->repo, e->item, revs)) {
 			e->item->flags |= UNINTERESTING;
 			goto skip_write_ref;
 		}
@@ -429,39 +434,11 @@ static int write_bundle_refs(int bundle_fd, struct rev_info *revs)
 				e->name);
 			goto skip_write_ref;
 		}
-		/*
-		 * If you run "git bundle create bndl v1.0..v2.0", the
-		 * name of the positive ref is "v2.0" but that is the
-		 * commit that is referenced by the tag, and not the tag
-		 * itself.
-		 */
-		if (!oideq(&oid, &e->item->oid)) {
-			/*
-			 * Is this the positive end of a range expressed
-			 * in terms of a tag (e.g. v2.0 from the range
-			 * "v1.0..v2.0")?
-			 */
-			struct commit *one = lookup_commit_reference(revs->repo, &oid);
-			struct object *obj;
-
-			if (e->item == &(one->object)) {
-				/*
-				 * Need to include e->name as an
-				 * independent ref to the pack-objects
-				 * input, so that the tag is included
-				 * in the output; otherwise we would
-				 * end up triggering "empty bundle"
-				 * error.
-				 */
-				obj = parse_object_or_die(&oid, e->name);
-				obj->flags |= SHOWN;
-				add_pending_object(revs, obj, e->name);
-			}
-			goto skip_write_ref;
-		}
 
 		ref_count++;
-		write_or_die(bundle_fd, oid_to_hex(&e->item->oid), the_hash_algo->hexsz);
+		strset_add(&objects, display_ref);
+		write_or_die(bundle_fd, oid_to_hex(&e->item->oid),
+			     revs->repo->hash_algo->hexsz);
 		write_or_die(bundle_fd, " ", 1);
 		write_or_die(bundle_fd, display_ref, strlen(display_ref));
 		write_or_die(bundle_fd, "\n", 1);
@@ -469,27 +446,91 @@ static int write_bundle_refs(int bundle_fd, struct rev_info *revs)
 		free(ref);
 	}
 
+	strset_clear(&objects);
+
 	/* end header */
 	write_or_die(bundle_fd, "\n", 1);
 	return ref_count;
 }
 
+struct bundle_prerequisites_info {
+	struct object_array *pending;
+	int fd;
+};
+
+static void write_bundle_prerequisites(struct commit *commit, void *data)
+{
+	struct bundle_prerequisites_info *bpi = data;
+	struct object *object;
+	struct pretty_print_context ctx = { 0 };
+	struct strbuf buf = STRBUF_INIT;
+
+	if (!(commit->object.flags & BOUNDARY))
+		return;
+	strbuf_addf(&buf, "-%s ", oid_to_hex(&commit->object.oid));
+	write_or_die(bpi->fd, buf.buf, buf.len);
+
+	ctx.fmt = CMIT_FMT_ONELINE;
+	ctx.output_encoding = get_log_output_encoding();
+	strbuf_reset(&buf);
+	pretty_print_commit(&ctx, commit, &buf);
+	strbuf_trim(&buf);
+
+	object = (struct object *)commit;
+	object->flags |= UNINTERESTING;
+	add_object_array_with_path(object, buf.buf, bpi->pending, S_IFINVALID,
+				   NULL);
+	strbuf_addch(&buf, '\n');
+	write_or_die(bpi->fd, buf.buf, buf.len);
+	strbuf_release(&buf);
+}
+
 int create_bundle(struct repository *r, const char *path,
-		  int argc, const char **argv, struct strvec *pack_options, int version)
+		  int argc, const char **argv, int version, int progress)
 {
 	struct lock_file lock = LOCK_INIT;
 	int bundle_fd = -1;
 	int bundle_to_stdout;
 	int ref_count = 0;
-	struct rev_info revs;
-	int min_version = the_hash_algo == &hash_algos[GIT_HASH_SHA1] ? 2 : 3;
+	struct rev_info revs, revs_copy = { 0 };
+	int min_version = 2;
+	struct bundle_prerequisites_info bpi;
+	int ret;
+	int i;
+
+	/* init revs to list objects for pack-objects later */
+	save_commit_buffer = 0;
+	repo_init_revisions(r, &revs, NULL);
+
+	/*
+	 * Pre-initialize the '--objects' flag so we can parse a
+	 * --filter option successfully.
+	 */
+	revs.tree_objects = revs.blob_objects = 1;
+
+	argc = setup_revisions(argc, argv, &revs, NULL);
+
+	/*
+	 * Reasons to require version 3:
+	 *
+	 * 1. @object-format is required because our hash algorithm is not
+	 *    SHA1.
+	 * 2. @filter is required because we parsed an object filter.
+	 */
+	if (r->hash_algo != &hash_algos[GIT_HASH_SHA1_LEGACY] || revs.filter.choice)
+		min_version = 3;
+
+	if (argc > 1) {
+		ret = error(_("unrecognized argument: %s"), argv[1]);
+		goto out;
+	}
 
 	bundle_to_stdout = !strcmp(path, "-");
 	if (bundle_to_stdout)
 		bundle_fd = 1;
 	else
-		bundle_fd = hold_lock_file_for_update(&lock, path,
-						      LOCK_DIE_ON_ERROR);
+		bundle_fd = repo_hold_lock_file_for_update(r, &lock, path,
+							   LOCK_DIE_ON_ERROR);
 
 	if (version == -1)
 		version = min_version;
@@ -497,67 +538,110 @@ int create_bundle(struct repository *r, const char *path,
 	if (version < 2 || version > 3) {
 		die(_("unsupported bundle version %d"), version);
 	} else if (version < min_version) {
-		die(_("cannot write bundle version %d with algorithm %s"), version, the_hash_algo->name);
+		die(_("cannot write bundle version %d with algorithm %s"), version,
+		    r->hash_algo->name);
 	} else if (version == 2) {
 		write_or_die(bundle_fd, v2_bundle_signature, strlen(v2_bundle_signature));
 	} else {
 		const char *capability = "@object-format=";
 		write_or_die(bundle_fd, v3_bundle_signature, strlen(v3_bundle_signature));
 		write_or_die(bundle_fd, capability, strlen(capability));
-		write_or_die(bundle_fd, the_hash_algo->name, strlen(the_hash_algo->name));
+		write_or_die(bundle_fd, r->hash_algo->name, strlen(r->hash_algo->name));
 		write_or_die(bundle_fd, "\n", 1);
+
+		if (revs.filter.choice) {
+			const char *value = expand_list_objects_filter_spec(&revs.filter);
+			capability = "@filter=";
+			write_or_die(bundle_fd, capability, strlen(capability));
+			write_or_die(bundle_fd, value, strlen(value));
+			write_or_die(bundle_fd, "\n", 1);
+		}
 	}
 
-	/* init revs to list objects for pack-objects later */
-	save_commit_buffer = 0;
-	repo_init_revisions(r, &revs, NULL);
+	/* save revs.pending in revs_copy for later use */
+	memcpy(&revs_copy, &revs, sizeof(revs));
+	revs_copy.pending.nr = 0;
+	revs_copy.pending.alloc = 0;
+	revs_copy.pending.objects = NULL;
+	for (i = 0; i < revs.pending.nr; i++) {
+		struct object_array_entry *e = revs.pending.objects + i;
+		if (e)
+			add_object_array_with_path(e->item, e->name,
+						   &revs_copy.pending,
+						   e->mode, e->path);
+	}
 
 	/* write prerequisites */
-	if (compute_and_write_prerequisites(bundle_fd, &revs, argc, argv))
-		goto err;
+	revs.boundary = 1;
+	if (prepare_revision_walk(&revs))
+		die("revision walk setup failed");
+	bpi.fd = bundle_fd;
+	bpi.pending = &revs_copy.pending;
 
-	argc = setup_revisions(argc, argv, &revs, NULL);
+	/*
+	 * Remove any object walking here. We only care about commits and
+	 * tags here. The revs_copy has the right instances of these values.
+	 */
+	revs.blob_objects = revs.tree_objects = 0;
+	traverse_commit_list(&revs, write_bundle_prerequisites, NULL, &bpi);
 
-	if (argc > 1) {
-		error(_("unrecognized argument: %s"), argv[1]);
-		goto err;
+	/* write bundle refs */
+	ref_count = write_bundle_refs(bundle_fd, &revs_copy);
+	if (!ref_count) {
+		die(_("Refusing to create empty bundle."));
+	} else if (ref_count < 0) {
+		ret = -1;
+		goto out;
 	}
 
-	object_array_remove_duplicates(&revs.pending);
-
-	ref_count = write_bundle_refs(bundle_fd, &revs);
-	if (!ref_count)
-		die(_("Refusing to create empty bundle."));
-	else if (ref_count < 0)
-		goto err;
-
 	/* write pack */
-	if (write_pack_data(bundle_fd, &revs, pack_options))
-		goto err;
+	if (write_pack_data(bundle_fd, &revs_copy, progress)) {
+		ret = -1;
+		goto out;
+	}
 
 	if (!bundle_to_stdout) {
 		if (commit_lock_file(&lock))
 			die_errno(_("cannot create '%s'"), path);
 	}
-	return 0;
-err:
+
+	ret = 0;
+
+out:
+	object_array_clear(&revs_copy.pending);
+	release_revisions(&revs);
 	rollback_lock_file(&lock);
-	return -1;
+	return ret;
 }
 
 int unbundle(struct repository *r, struct bundle_header *header,
-	     int bundle_fd, int flags)
+	     int bundle_fd, struct strvec *extra_index_pack_args,
+	     struct unbundle_opts *opts)
 {
-	const char *argv_index_pack[] = {"index-pack",
-					 "--fix-thin", "--stdin", NULL, NULL};
 	struct child_process ip = CHILD_PROCESS_INIT;
+	struct unbundle_opts opts_fallback = { 0 };
 
-	if (flags & BUNDLE_VERBOSE)
-		argv_index_pack[3] = "-v";
+	if (!opts)
+		opts = &opts_fallback;
 
-	if (verify_bundle(r, header, 0))
+	if (verify_bundle(r, header, opts->flags)) {
+		close(bundle_fd);
 		return -1;
-	ip.argv = argv_index_pack;
+	}
+
+	strvec_pushl(&ip.args, "index-pack", "--fix-thin", "--stdin", NULL);
+
+	/* If there is a filter, then we need to create the promisor pack. */
+	if (header->filter.choice)
+		strvec_push(&ip.args, "--promisor=from-bundle");
+
+	if (opts->flags & VERIFY_BUNDLE_FSCK)
+		strvec_pushf(&ip.args, "--fsck-objects%s",
+			     opts->fsck_msg_types ? opts->fsck_msg_types : "");
+
+	if (extra_index_pack_args)
+		strvec_pushv(&ip.args, extra_index_pack_args->v);
+
 	ip.in = bundle_fd;
 	ip.no_stdout = 1;
 	ip.git_cmd = 1;

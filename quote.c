@@ -1,5 +1,9 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "path.h"
 #include "quote.h"
+#include "strbuf.h"
 #include "strvec.h"
 
 int quote_path_fully = 1;
@@ -116,7 +120,7 @@ void sq_append_quote_argv_pretty(struct strbuf *dst, const char **argv)
 	}
 }
 
-static char *sq_dequote_step(char *arg, char **next)
+char *sq_dequote_step(char *arg, char **next)
 {
 	char *dst = arg;
 	char *src = arg;
@@ -153,11 +157,8 @@ static char *sq_dequote_step(char *arg, char **next)
 			}
 		/* Fallthrough */
 		default:
-			if (!next || !isspace(*src))
+			if (!next)
 				return NULL;
-			do {
-				c = *++src;
-			} while (isspace(c));
 			*dst = 0;
 			*next = src;
 			return arg;
@@ -170,9 +171,7 @@ char *sq_dequote(char *arg)
 	return sq_dequote_step(arg, NULL);
 }
 
-static int sq_dequote_to_argv_internal(char *arg,
-				       const char ***argv, int *nr, int *alloc,
-				       struct strvec *array)
+int sq_dequote_to_strvec(char *arg, struct strvec *array)
 {
 	char *next = arg;
 
@@ -182,25 +181,18 @@ static int sq_dequote_to_argv_internal(char *arg,
 		char *dequoted = sq_dequote_step(next, &next);
 		if (!dequoted)
 			return -1;
-		if (argv) {
-			ALLOC_GROW(*argv, *nr + 1, *alloc);
-			(*argv)[(*nr)++] = dequoted;
+		if (next) {
+			char c;
+			if (!isspace(*next))
+				return -1;
+			do {
+				c = *++next;
+			} while (isspace(c));
 		}
-		if (array)
-			strvec_push(array, dequoted);
+		strvec_push(array, dequoted);
 	} while (next);
 
 	return 0;
-}
-
-int sq_dequote_to_argv(char *arg, const char ***argv, int *nr, int *alloc)
-{
-	return sq_dequote_to_argv_internal(arg, argv, nr, alloc, NULL);
-}
-
-int sq_dequote_to_strvec(char *arg, struct strvec *array)
-{
-	return sq_dequote_to_argv_internal(arg, NULL, NULL, NULL, array);
 }
 
 /* 1 means: quote as octal
@@ -462,6 +454,23 @@ void perl_quote_buf(struct strbuf *sb, const char *src)
 		if (c == sq || c == bq)
 			strbuf_addch(sb, bq);
 		strbuf_addch(sb, c);
+	}
+	strbuf_addch(sb, sq);
+}
+
+void perl_quote_buf_with_len(struct strbuf *sb, const char *src, size_t len)
+{
+	const char sq = '\'';
+	const char bq = '\\';
+	const char *c = src;
+	const char *end = src + len;
+
+	strbuf_addch(sb, sq);
+	while (c != end) {
+		if (*c == sq || *c == bq)
+			strbuf_addch(sb, bq);
+		strbuf_addch(sb, *c);
+		c++;
 	}
 	strbuf_addch(sb, sq);
 }

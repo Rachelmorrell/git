@@ -16,6 +16,11 @@ P4D_TIMEOUT=300
 
 . ./test-lib.sh
 
+if test -n "$NO_P4_TESTS"
+then
+	skip_all='skipping git p4 tests, NO_P4_TESTS defined'
+	test_done
+fi
 if ! test_have_prereq PYTHON
 then
 	skip_all='skipping git p4 tests; python not available'
@@ -60,6 +65,7 @@ pidfile="$TRASH_DIRECTORY/p4d.pid"
 
 stop_p4d_and_watchdog () {
 	kill -9 $p4d_pid $watchdog_pid
+	wait $p4d_pid $watchdog_pid 2>/dev/null
 }
 
 # git p4 submit generates a temp file, which will
@@ -142,10 +148,11 @@ start_p4d () {
 
 p4_add_user () {
 	name=$1 &&
+	fullname="${2:-Dr. $1}"
 	p4 user -f -i <<-EOF
 	User: $name
 	Email: $name@example.com
-	FullName: Dr. $name
+	FullName: $fullname
 	EOF
 }
 
@@ -168,8 +175,7 @@ retry_until_success () {
 }
 
 stop_and_cleanup_p4d () {
-	kill -9 $p4d_pid $watchdog_pid
-	wait $p4d_pid
+	stop_p4d_and_watchdog
 	rm -rf "$db" "$cli" "$pidfile"
 }
 

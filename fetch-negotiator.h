@@ -47,13 +47,30 @@ struct fetch_negotiator {
 	 */
 	int (*ack)(struct fetch_negotiator *, struct commit *);
 
+	/*
+	 * Inform the negotiator that this commit has already been sent as
+	 * a "have" line outside of the negotiator's control. The negotiator
+	 * should avoid outputting it from next() and may use it to optimize
+	 * further negotiation (e.g., by treating it and its ancestors as
+	 * common).
+	 */
+	void (*have_sent)(struct fetch_negotiator *, struct commit *);
+
 	void (*release)(struct fetch_negotiator *);
 
 	/* internal use */
 	void *data;
 };
 
+/*
+ * Initialize a negotiator based on the repository settings.
+ */
 void fetch_negotiator_init(struct repository *r,
 			   struct fetch_negotiator *negotiator);
+
+/*
+ * Initialize a noop negotiator.
+ */
+void fetch_negotiator_init_noop(struct fetch_negotiator *negotiator);
 
 #endif

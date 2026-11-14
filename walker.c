@@ -1,14 +1,20 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
+#include "gettext.h"
+#include "hex.h"
 #include "walker.h"
 #include "repository.h"
-#include "object-store.h"
+#include "odb.h"
 #include "commit.h"
+#include "strbuf.h"
 #include "tree.h"
 #include "tree-walk.h"
 #include "tag.h"
 #include "blob.h"
 #include "refs.h"
 #include "progress.h"
+#include "prio-queue.h"
 
 static struct object_id current_commit_oid;
 
@@ -39,10 +45,10 @@ static int process_tree(struct walker *walker, struct tree *tree)
 	struct tree_desc desc;
 	struct name_entry entry;
 
-	if (parse_tree(tree))
+	if (repo_parse_tree(the_repository, tree))
 		return -1;
 
-	init_tree_desc(&desc, tree->buffer, tree->size);
+	init_tree_desc(&desc, &tree->object.oid, tree->buffer, tree->size);
 	while (tree_entry(&desc, &entry)) {
 		struct object *obj = NULL;
 
@@ -73,16 +79,19 @@ static int process_tree(struct walker *walker, struct tree *tree)
 #define SEEN		(1U << 1)
 #define TO_SCAN		(1U << 2)
 
-static struct commit_list *complete = NULL;
+static struct prio_queue complete = { compare_commits_by_commit_date };
 
 static int process_commit(struct walker *walker, struct commit *commit)
 {
 	struct commit_list *parents;
+	struct commit *item;
 
-	if (parse_commit(commit))
+	if (repo_parse_commit(the_repository, commit))
 		return -1;
 
-	while (complete && complete->item->date >= commit->date) {
+	while ((item = prio_queue_peek(&complete))) {
+		if (item->date < commit->date)
+			break;
 		pop_most_recent_commit(&complete, COMPLETE);
 	}
 
@@ -93,7 +102,7 @@ static int process_commit(struct walker *walker, struct commit *commit)
 
 	walker_say(walker, "walk %s\n", oid_to_hex(&commit->object.oid));
 
-	if (process(walker, &get_commit_tree(commit)->object))
+	if (process(walker, &repo_get_commit_tree(the_repository, commit)->object))
 		return -1;
 
 	for (parents = commit->parents; parents; parents = parents->next) {
@@ -106,7 +115,7 @@ static int process_commit(struct walker *walker, struct commit *commit)
 
 static int process_tag(struct walker *walker, struct tag *tag)
 {
-	if (parse_tag(tag))
+	if (parse_tag(the_repository, tag))
 		return -1;
 	return process(walker, tag->tagged);
 }
@@ -145,14 +154,15 @@ static int process(struct walker *walker, struct object *obj)
 		return 0;
 	obj->flags |= SEEN;
 
-	if (has_object_file(&obj->oid)) {
+	if (odb_has_object(the_repository->objects, &obj->oid,
+			   ODB_HAS_OBJECT_RECHECK_PACKED | ODB_HAS_OBJECT_FETCH_PROMISOR)) {
 		/* We already have it, so we should scan it now. */
 		obj->flags |= TO_SCAN;
 	}
 	else {
 		if (obj->flags & COMPLETE)
 			return 0;
-		walker->prefetch(walker, obj->oid.hash);
+		walker->prefetch(walker, &obj->oid);
 	}
 
 	object_list_insert(obj, process_queue_end);
@@ -167,7 +177,8 @@ static int loop(struct walker *walker)
 	uint64_t nr = 0;
 
 	if (walker->get_progress)
-		progress = start_delayed_progress(_("Fetching objects"), 0);
+		progress = start_delayed_progress(the_repository,
+						  _("Fetching objects"), 0);
 
 	while (process_queue) {
 		struct object *obj = process_queue->item;
@@ -181,7 +192,7 @@ static int loop(struct walker *walker)
 		 * the queue because we needed to fetch it first.
 		 */
 		if (! (obj->flags & TO_SCAN)) {
-			if (walker->fetch(walker, obj->oid.hash)) {
+			if (walker->fetch(walker, &obj->oid)) {
 				stop_progress(&progress);
 				report_missing(obj);
 				return -1;
@@ -215,15 +226,14 @@ static int interpret_target(struct walker *walker, char *target, struct object_i
 	return -1;
 }
 
-static int mark_complete(const char *path, const struct object_id *oid,
-			 int flag, void *cb_data)
+static int mark_complete(const struct reference *ref, void *cb_data UNUSED)
 {
 	struct commit *commit = lookup_commit_reference_gently(the_repository,
-							       oid, 1);
+							       ref->oid, 1);
 
 	if (commit) {
 		commit->object.flags |= COMPLETE;
-		commit_list_insert(commit, &complete);
+		prio_queue_put(&complete, commit);
 	}
 	return 0;
 }
@@ -281,7 +291,8 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 	ALLOC_ARRAY(oids, targets);
 
 	if (write_ref) {
-		transaction = ref_transaction_begin(&err);
+		transaction = ref_store_transaction_begin(get_main_ref_store(the_repository),
+							  0, &err);
 		if (!transaction) {
 			error("%s", err.buf);
 			goto done;
@@ -289,8 +300,8 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 	}
 
 	if (!walker->get_recover) {
-		for_each_ref(mark_complete, NULL);
-		commit_list_sort_by_date(&complete);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  mark_complete, NULL);
 	}
 
 	for (i = 0; i < targets; i++) {
@@ -298,7 +309,7 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 			error("Could not interpret response from server '%s' as something to pull", target[i]);
 			goto done;
 		}
-		if (process(walker, lookup_unknown_object(&oids[i])))
+		if (process(walker, lookup_unknown_object(the_repository, &oids[i])))
 			goto done;
 	}
 
@@ -319,7 +330,7 @@ int walker_fetch(struct walker *walker, int targets, char **target,
 		strbuf_reset(&refname);
 		strbuf_addf(&refname, "refs/%s", write_ref[i]);
 		if (ref_transaction_update(transaction, refname.buf,
-					   oids + i, NULL, 0,
+					   oids + i, NULL, NULL, NULL, 0,
 					   msg ? msg : "fetch (unknown)",
 					   &err)) {
 			error("%s", err.buf);

@@ -2,6 +2,9 @@
 
 test_description='merge simplification'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 note () {
@@ -9,17 +12,18 @@ note () {
 }
 
 unnote () {
-	git name-rev --tags --stdin | sed -e "s|$OID_REGEX (tags/\([^)]*\)) |\1 |g"
+	test_when_finished "rm -f tmp" &&
+	git name-rev --tags --annotate-stdin >tmp &&
+	sed -e "s|$OID_REGEX (tags/\([^)]*\)) |\1 |g" <tmp
 }
 
 #
-# Create a test repo with interesting commit graph:
+# Create a test repo with an interesting commit graph:
 #
-# A--B----------G--H--I--K--L
-#  \  \           /     /
-#   \  \         /     /
-#    C------E---F     J
-#        \_/
+# A-----B-----G--H--I--K--L
+#  \     \      /     /
+#   \     \    /     /
+#    C--D--E--F     J
 #
 # The commits are laid out from left-to-right starting with
 # the root commit A and terminating at the tip commit L.
@@ -43,7 +47,7 @@ test_expect_success setup '
 	git add side &&
 	test_tick && git commit -m "Side root" &&
 	note J &&
-	git checkout master &&
+	git checkout main &&
 
 	echo "Hello" >file &&
 	echo "second" >lost &&
@@ -65,7 +69,7 @@ test_expect_success setup '
 	note D &&
 
 	test_tick &&
-	test_must_fail git merge -m "merge" master &&
+	test_must_fail git merge -m "merge" main &&
 	>lost && git commit -a -m "merge" &&
 	note E &&
 
@@ -74,7 +78,7 @@ test_expect_success setup '
 	test_tick && git commit -m "Irrelevant change" &&
 	note F &&
 
-	git checkout master &&
+	git checkout main &&
 	echo "Yet another" >elif &&
 	git add elif &&
 	test_tick && git commit -m "Another irrelevant change" &&
@@ -87,7 +91,7 @@ test_expect_success setup '
 	test_tick && git commit -a -m "Final change" &&
 	note I &&
 
-	git checkout master &&
+	git checkout main &&
 	test_tick && git merge --allow-unrelated-histories -m "Coolest" unrelated &&
 	note K &&
 
@@ -109,8 +113,8 @@ check_outcome () {
 	shift &&
 	param="$*" &&
 	test_expect_$outcome "log $param" '
-		git log --pretty="$FMT" --parents $param |
-		unnote >actual &&
+		git log --pretty="$FMT" --parents $param >out &&
+		unnote >actual <out &&
 		sed -e "s/^.*	\([^ ]*\) .*/\1/" >check <actual &&
 		test_cmp expect check
 	'
@@ -139,11 +143,18 @@ check_result 'I B A' --author-date-order -- file
 check_result 'H' --first-parent -- another-file
 check_result 'H' --first-parent --topo-order -- another-file
 
+check_result 'L K I H G B A' --first-parent L
+check_result 'F E D C' --exclude-first-parent-only F ^L
+check_result '' F ^L
+check_result 'L K I H G J' L ^F
+check_result 'L K I H G B J' --exclude-first-parent-only L ^F
+check_result 'L K I H G B' --exclude-first-parent-only --first-parent L ^F
+
 check_result 'E C B A' --full-history E -- lost
 test_expect_success 'full history simplification without parent' '
 	printf "%s\n" E C B A >expect &&
-	git log --pretty="$FMT" --full-history E -- lost |
-	unnote >actual &&
+	git log --pretty="$FMT" --full-history E -- lost >out &&
+	unnote >actual <out &&
 	sed -e "s/^.*	\([^ ]*\) .*/\1/" >check <actual &&
 	test_cmp expect check
 '
@@ -166,7 +177,7 @@ test_expect_success '--full-diff is not affected by --parents' '
 #   \ /      /\        /
 #    `---X--'  `---Y--'
 #
-# This example is explained in Documentation/rev-list-options.txt
+# This example is explained in Documentation/rev-list-options.adoc
 
 test_expect_success 'setup rebuild repo' '
 	rm -rf .git * &&
@@ -272,6 +283,24 @@ test_expect_success 'log --graph --simplify-merges --show-pulls' '
 		--simplify-merges --show-pulls \
 		-- file >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'exclude-first-parent-only with parent already seen' '
+	git checkout --orphan test-seen &&
+	git rm -rf . &&
+	test_commit r1 &&
+	git checkout -b branch-f &&
+	test_commit f &&
+	git checkout test-seen &&
+	git merge --no-ff --no-edit -m r2 branch-f &&
+	git tag r2 &&
+
+	git rev-list --exclude-first-parent-only f ^r2 >actual &&
+	git rev-parse f >expect &&
+	test_cmp expect actual &&
+
+	git rev-list --exclude-first-parent-only f r1 ^r2 >actual2 &&
+	test_cmp expect actual2
 '
 
 test_done

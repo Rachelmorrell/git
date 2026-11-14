@@ -2,14 +2,17 @@
 
 test_description='merge-recursive space options
 
-* [master] Clarify
+* [main] Clarify
  ! [remote] Remove cruft
 --
  + [remote] Remove cruft
-*  [master] Clarify
+*  [main] Clarify
 *+ [remote^] Initial revision
 *   ok 1: setup
 '
+
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
@@ -87,7 +90,7 @@ test_expect_success 'setup' '
 	mv text.txt+ text.txt &&
 	git commit -a -m "Remove cruft" &&
 
-	git checkout master &&
+	git checkout main &&
 	sed -e "
 			s/\(not in his right mind\),\(.*\)/\1;\2Q/
 			s/Quite correct\(.*\)/It is too correct\1Q/
@@ -106,7 +109,7 @@ test_expect_success 'naive merge fails' '
 	git read-tree --reset -u HEAD &&
 	test_must_fail git merge-recursive HEAD^ -- HEAD remote &&
 	test_must_fail git update-index --refresh &&
-	grep "<<<<<<" text.txt
+	test_grep "<<<<<<" text.txt
 '
 
 test_expect_success '--ignore-space-change makes merge succeed' '
@@ -120,7 +123,7 @@ test_expect_success 'naive cherry-pick fails' '
 	git read-tree --reset -u HEAD &&
 	test_must_fail git cherry-pick remote &&
 	test_must_fail git update-index --refresh &&
-	grep "<<<<<<" text.txt
+	test_grep "<<<<<<" text.txt
 '
 
 test_expect_success '-Xignore-space-change makes cherry-pick succeed' '

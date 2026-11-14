@@ -26,8 +26,6 @@ test_description="recursive merge with directory renames"
 #                     files that might be renamed into each other's paths.)
 
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-merge.sh
-
 
 ###########################################################################
 # SECTION 1: Basic cases we should be able to handle
@@ -40,7 +38,7 @@ test_description="recursive merge with directory renames"
 #   Expected: y/{b,c,d,e/f}
 
 test_setup_1a () {
-	test_create_repo 1a &&
+	git init 1a &&
 	(
 		cd 1a &&
 
@@ -99,6 +97,23 @@ test_expect_success '1a: Simple directory rename detection' '
 	)
 '
 
+test_expect_success '1a (valueless): merge.directoryRenames without a value means true' '
+	mkdir valueless &&
+	(
+		cd valueless &&
+		test_setup_1a &&
+		cd 1a &&
+
+		git checkout A^0 &&
+
+		git -c merge.directoryRenames merge -s recursive B^0 &&
+
+		git rev-parse >actual HEAD:y/d HEAD:y/e/f &&
+		git rev-parse >expect B:z/d B:z/e/f &&
+		test_cmp expect actual
+	)
+'
+
 # Testcase 1b, Merge a directory with another
 #   Commit O: z/{b,c},   y/d
 #   Commit A: z/{b,c,e}, y/d
@@ -106,7 +121,7 @@ test_expect_success '1a: Simple directory rename detection' '
 #   Expected: y/{b,c,d,e}
 
 test_setup_1b () {
-	test_create_repo 1b &&
+	git init 1b &&
 	(
 		cd 1b &&
 
@@ -169,7 +184,7 @@ test_expect_success '1b: Merge a directory with another' '
 #   Expected: y/{b,c,d}  (because x/d -> z/d -> y/d)
 
 test_setup_1c () {
-	test_create_repo 1c &&
+	git init 1c &&
 	(
 		cd 1c &&
 
@@ -232,7 +247,7 @@ test_expect_success '1c: Transitive renaming' '
 #         y/wham_1 & z/wham_2 should too...giving us a conflict.
 
 test_setup_1d () {
-	test_create_repo 1d &&
+	git init 1d &&
 	(
 		cd 1d &&
 
@@ -276,7 +291,7 @@ test_expect_success '1d: Directory renames cause a rename/rename(2to1) conflict'
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (\(.*\)/\1)" out &&
+		test_grep "CONFLICT (\(.*\)/\1)" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 8 out &&
@@ -302,20 +317,11 @@ test_expect_success '1d: Directory renames cause a rename/rename(2to1) conflict'
 		git cat-file -p :2:x/wham >expect &&
 		git cat-file -p :3:x/wham >other &&
 		>empty &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_must_fail git merge-file \
-				-L "HEAD:y/wham" \
-				-L "" \
-				-L "B^0:z/wham" \
-				expect empty other
-		else
-			test_must_fail git merge-file \
-				-L "HEAD" \
-				-L "" \
-				-L "B^0" \
-				expect empty other
-		fi &&
+		test_must_fail git merge-file \
+			-L "HEAD:y/wham" \
+			-L "" \
+			-L "B^0:z/wham" \
+			expect empty other &&
 		test_cmp expect x/wham
 	)
 '
@@ -328,7 +334,7 @@ test_expect_success '1d: Directory renames cause a rename/rename(2to1) conflict'
 #   Expected: y/{newb,newc,d}
 
 test_setup_1e () {
-	test_create_repo 1e &&
+	git init 1e &&
 	(
 		cd 1e &&
 
@@ -387,7 +393,7 @@ test_expect_success '1e: Renamed directory, with all files being renamed too' '
 #   Expected: y/{b,c}, x/{d,e,f,g}
 
 test_setup_1f () {
-	test_create_repo 1f &&
+	git init 1f &&
 	(
 		cd 1f &&
 
@@ -454,7 +460,7 @@ test_expect_success '1f: Split a directory into two other directories' '
 #   the directory renamed, but the files within it. (see 1b)
 #
 #   If renames split a directory into two or more others, the directory
-#   with the most renames, "wins" (see 1c).  However, see the testcases
+#   with the most renames, "wins" (see 1f).  However, see the testcases
 #   in section 2, plus testcases 3a and 4a.
 ###########################################################################
 
@@ -476,7 +482,7 @@ test_expect_success '1f: Split a directory into two other directories' '
 #   Commit B: z/{b,c,d}
 #   Expected: y/b, w/c, z/d, with warning about z/ -> (y/ vs. w/) conflict
 test_setup_2a () {
-	test_create_repo 2a &&
+	git init 2a &&
 	(
 		cd 2a &&
 
@@ -515,7 +521,7 @@ test_expect_success '2a: Directory split into two on one side, with equal number
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT.*directory rename split" out &&
+		test_grep "CONFLICT.*directory rename split" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 3 out &&
@@ -538,7 +544,7 @@ test_expect_success '2a: Directory split into two on one side, with equal number
 #   Commit B: z/{b,c}, x/d
 #   Expected: y/b, w/c, x/d; No warning about z/ -> (y/ vs. w/) conflict
 test_setup_2b () {
-	test_create_repo 2b &&
+	git init 2b &&
 	(
 		cd 2b &&
 
@@ -591,7 +597,7 @@ test_expect_success '2b: Directory split into two on one side, with equal number
 		git rev-parse >expect \
 			 O:z/b  O:z/c  B:x/d &&
 		test_cmp expect actual &&
-		test_i18ngrep ! "CONFLICT.*directory rename split" out
+		test_grep ! "CONFLICT.*directory rename split" out
 	)
 '
 
@@ -620,7 +626,7 @@ test_expect_success '2b: Directory split into two on one side, with equal number
 #   Commit B: y/{b,c}, x/d
 #   Expected: y/{b,c}, x/d
 test_setup_3a () {
-	test_create_repo 3a &&
+	git init 3a &&
 	(
 		cd 3a &&
 
@@ -684,7 +690,7 @@ test_expect_success '3a: Avoid implicit rename if involved as source on other si
 #         end up with CONFLICT:(z/d -> y/d vs. x/d vs. w/d), i.e. a
 #         rename/rename/rename(1to3) conflict, which is just weird.
 test_setup_3b () {
-	test_create_repo 3b &&
+	git init 3b &&
 	(
 		cd 3b &&
 
@@ -726,8 +732,8 @@ test_expect_success '3b: Avoid implicit rename if involved as source on current 
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep CONFLICT.*rename/rename.*z/d.*x/d.*w/d out &&
-		test_i18ngrep ! CONFLICT.*rename/rename.*y/d out &&
+		test_grep CONFLICT.*rename/rename.*z/d.*x/d.*w/d out &&
+		test_grep ! CONFLICT.*rename/rename.*y/d out &&
 
 		git ls-files -s >out &&
 		test_line_count = 5 out &&
@@ -807,7 +813,7 @@ test_expect_success '3b: Avoid implicit rename if involved as source on current 
 #   NOTE: Even though most files from z moved to y, we don't want f to follow.
 
 test_setup_4a () {
-	test_create_repo 4a &&
+	git init 4a &&
 	(
 		cd 4a &&
 
@@ -896,7 +902,7 @@ test_expect_success '4a: Directory split, with original directory still present'
 #         index.
 
 test_setup_5a () {
-	test_create_repo 5a &&
+	git init 5a &&
 	(
 		cd 5a &&
 
@@ -938,7 +944,7 @@ test_expect_success '5a: Merge directories, other side adds files to original an
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT.*implicit dir rename" out &&
+		test_grep "CONFLICT.*implicit dir rename" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 6 out &&
@@ -971,7 +977,7 @@ test_expect_success '5a: Merge directories, other side adds files to original an
 #         back to git behavior without the directory rename detection.
 
 test_setup_5b () {
-	test_create_repo 5b &&
+	git init 5b &&
 	(
 		cd 5b &&
 
@@ -1013,7 +1019,7 @@ test_expect_success '5b: Rename/delete in order to get add/add/add conflict' '
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (add/add).* y/d" out &&
+		test_grep "CONFLICT (add/add).* y/d" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 5 out &&
@@ -1048,7 +1054,7 @@ test_expect_success '5b: Rename/delete in order to get add/add/add conflict' '
 #             though, because it doesn't have anything in the way.
 
 test_setup_5c () {
-	test_create_repo 5c &&
+	git init 5c &&
 	(
 		cd 5c &&
 
@@ -1094,8 +1100,8 @@ test_expect_success '5c: Transitive rename would cause rename/rename/rename/add/
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/rename).*x/d.*w/d.*z/d" out &&
-		test_i18ngrep "CONFLICT (add/add).* y/d" out &&
+		test_grep "CONFLICT (rename/rename).*x/d.*w/d.*z/d" out &&
+		test_grep "CONFLICT (add/add).* y/d" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 9 out &&
@@ -1124,7 +1130,7 @@ test_expect_success '5c: Transitive rename would cause rename/rename/rename/add/
 		test_cmp expect actual &&
 		test_path_is_missing x/d &&
 		test_path_is_file y/d &&
-		grep -q "<<<<" y/d  # conflict markers should be present
+		test_grep -q "<<<<" y/d  # conflict markers should be present
 	)
 '
 
@@ -1138,7 +1144,7 @@ test_expect_success '5c: Transitive rename would cause rename/rename/rename/add/
 #         directory rename detection for z/f -> y/f.
 
 test_setup_5d () {
-	test_create_repo 5d &&
+	git init 5d &&
 	(
 		cd 5d &&
 
@@ -1179,25 +1185,17 @@ test_expect_success '5d: Directory/file/file conflict due to directory rename' '
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (file/directory).*y/d" out &&
+		test_grep "CONFLICT (file/directory).*y/d" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 6 out &&
 		git ls-files -u >out &&
 		test_line_count = 1 out &&
 		git ls-files -o >out &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_line_count = 1 out &&
+		test_line_count = 1 out &&
 
-			git rev-parse >actual \
-			    :0:y/b :0:y/c :0:z/d :0:y/f :2:y/d~HEAD :0:y/d/e
-		else
-			test_line_count = 2 out &&
-
-			git rev-parse >actual \
-			    :0:y/b :0:y/c :0:z/d :0:y/f :2:y/d      :0:y/d/e
-		fi &&
+		git rev-parse >actual \
+		    :0:y/b :0:y/c :0:z/d :0:y/f :2:y/d~HEAD :0:y/d/e &&
 		git rev-parse >expect \
 			 O:z/b  O:z/c  B:z/d  B:z/f  A:y/d  B:y/d/e &&
 		test_cmp expect actual &&
@@ -1239,7 +1237,7 @@ test_expect_success '5d: Directory/file/file conflict due to directory rename' '
 #         it is also involved in a rename/delete conflict.
 
 test_setup_6a () {
-	test_create_repo 6a &&
+	git init 6a &&
 	(
 		cd 6a &&
 
@@ -1278,34 +1276,19 @@ test_expect_success '6a: Tricky rename/delete' '
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/delete).*z/c.*y/c" out &&
+		test_grep "CONFLICT (rename/delete).*z/c.*y/c" out &&
 
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			git ls-files -s >out &&
-			test_line_count = 3 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 1 out &&
+		git ls-files -s >out &&
+		test_line_count = 3 out &&
+		git ls-files -u >out &&
+		test_line_count = 2 out &&
+		git ls-files -o >out &&
+		test_line_count = 1 out &&
 
-			git rev-parse >actual \
-				:0:y/b :1:y/c :3:y/c &&
-			git rev-parse >expect \
-				 O:z/b  O:z/c  O:z/c
-		else
-			git ls-files -s >out &&
-			test_line_count = 2 out &&
-			git ls-files -u >out &&
-			test_line_count = 1 out &&
-			git ls-files -o >out &&
-			test_line_count = 1 out &&
-
-			git rev-parse >actual \
-				:0:y/b :3:y/c &&
-			git rev-parse >expect \
-				 O:z/b  O:z/c
-		fi &&
+		git rev-parse >actual \
+			:0:y/b :1:y/c :3:y/c &&
+		git rev-parse >expect \
+			 O:z/b  O:z/c  O:z/c &&
 		test_cmp expect actual
 	)
 '
@@ -1337,7 +1320,7 @@ test_expect_success '6a: Tricky rename/delete' '
 #         the behavior on testcases 6b2 and 8e, and introduced this 6b1 testcase.
 
 test_setup_6b1 () {
-	test_create_repo 6b1 &&
+	git init 6b1 &&
 	(
 		cd 6b1 &&
 
@@ -1372,7 +1355,7 @@ test_setup_6b1 () {
 	)
 }
 
-test_expect_merge_algorithm failure success '6b1: Same renames done on both sides, plus another rename' '
+test_expect_success '6b1: Same renames done on both sides, plus another rename' '
 	test_setup_6b1 &&
 	(
 		cd 6b1 &&
@@ -1415,7 +1398,7 @@ test_expect_merge_algorithm failure success '6b1: Same renames done on both side
 #         the z/ -> y/ rename.
 
 test_setup_6b2 () {
-	test_create_repo 6b2 &&
+	git init 6b2 &&
 	(
 		cd 6b2 &&
 
@@ -1445,7 +1428,7 @@ test_setup_6b2 () {
 	)
 }
 
-test_expect_merge_algorithm failure success '6b2: Same rename done on both sides' '
+test_expect_success '6b2: Same rename done on both sides' '
 	test_setup_6b2 &&
 	(
 		cd 6b2 &&
@@ -1479,7 +1462,7 @@ test_expect_merge_algorithm failure success '6b2: Same rename done on both sides
 #         "accidentally detect a rename" and give us y/{b,c,d}.
 
 test_setup_6c () {
-	test_create_repo 6c &&
+	git init 6c &&
 	(
 		cd 6c &&
 
@@ -1542,7 +1525,7 @@ test_expect_success '6c: Rename only done on same side' '
 #         doesn't "accidentally detect a rename" and give us y/{b,c,d}.
 
 test_setup_6d () {
-	test_create_repo 6d &&
+	git init 6d &&
 	(
 		cd 6d &&
 
@@ -1605,7 +1588,7 @@ test_expect_success '6d: We do not always want transitive renaming' '
 #         add/add conflict on y/d_1 vs y/d_2.
 
 test_setup_6e () {
-	test_create_repo 6e &&
+	git init 6e &&
 	(
 		cd 6e &&
 
@@ -1700,7 +1683,7 @@ test_expect_success '6e: Add/add from one side' '
 #   NOTE: There's a rename of z/ here, y/ has more renames, so z/d -> y/d.
 
 test_setup_7a () {
-	test_create_repo 7a &&
+	git init 7a &&
 	(
 		cd 7a &&
 
@@ -1740,8 +1723,8 @@ test_expect_success '7a: rename-dir vs. rename-dir (NOT split evenly) PLUS add-o
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/rename).*z/b.*y/b.*w/b" out &&
-		test_i18ngrep "CONFLICT (rename/rename).*z/c.*y/c.*x/c" out &&
+		test_grep "CONFLICT (rename/rename).*z/b.*y/b.*w/b" out &&
+		test_grep "CONFLICT (rename/rename).*z/c.*y/c.*x/c" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 7 out &&
@@ -1772,7 +1755,7 @@ test_expect_success '7a: rename-dir vs. rename-dir (NOT split evenly) PLUS add-o
 #   Expected: y/{b,c}, CONFLICT(rename/rename(2to1): x/d_1, w/d_2 -> y_d)
 
 test_setup_7b () {
-	test_create_repo 7b &&
+	git init 7b &&
 	(
 		cd 7b &&
 
@@ -1813,7 +1796,7 @@ test_expect_success '7b: rename/rename(2to1), but only due to transitive rename'
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (\(.*\)/\1)" out &&
+		test_grep "CONFLICT (\(.*\)/\1)" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 4 out &&
@@ -1832,20 +1815,11 @@ test_expect_success '7b: rename/rename(2to1), but only due to transitive rename'
 		git cat-file -p :2:y/d >expect &&
 		git cat-file -p :3:y/d >other &&
 		>empty &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_must_fail git merge-file \
-				-L "HEAD:y/d" \
-				-L "" \
-				-L "B^0:z/d" \
-				expect empty other
-		else
-			test_must_fail git merge-file \
-				-L "HEAD" \
-				-L "" \
-				-L "B^0" \
-				expect empty other
-		fi &&
+		test_must_fail git merge-file \
+			-L "HEAD:y/d" \
+			-L "" \
+			-L "B^0:z/d" \
+			expect empty other &&
 		test_cmp expect y/d
 	)
 '
@@ -1861,7 +1835,7 @@ test_expect_success '7b: rename/rename(2to1), but only due to transitive rename'
 #         nor CONFLiCT x/d -> w/d vs. y/d vs. z/d)
 
 test_setup_7c () {
-	test_create_repo 7c &&
+	git init 7c &&
 	(
 		cd 7c &&
 
@@ -1900,7 +1874,7 @@ test_expect_success '7c: rename/rename(1to...2or3); transitive rename may add co
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/rename).*x/d.*w/d.*y/d" out &&
+		test_grep "CONFLICT (rename/rename).*x/d.*w/d.*y/d" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 5 out &&
@@ -1926,7 +1900,7 @@ test_expect_success '7c: rename/rename(1to...2or3); transitive rename may add co
 #   NOTE: z->y so NOT CONFLICT(delete x/d vs rename to z/d)
 
 test_setup_7d () {
-	test_create_repo 7d &&
+	git init 7d &&
 	(
 		cd 7d &&
 
@@ -1965,34 +1939,19 @@ test_expect_success '7d: transitive rename involved in rename/delete; how is it 
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/delete).*x/d.*y/d" out &&
+		test_grep "CONFLICT (rename/delete).*x/d.*y/d" out &&
 
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			git ls-files -s >out &&
-			test_line_count = 4 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 1 out &&
+		git ls-files -s >out &&
+		test_line_count = 4 out &&
+		git ls-files -u >out &&
+		test_line_count = 2 out &&
+		git ls-files -o >out &&
+		test_line_count = 1 out &&
 
-			git rev-parse >actual \
-				:0:y/b :0:y/c :1:y/d :3:y/d &&
-			git rev-parse >expect \
-				 O:z/b  O:z/c  O:x/d  O:x/d
-		else
-			git ls-files -s >out &&
-			test_line_count = 3 out &&
-			git ls-files -u >out &&
-			test_line_count = 1 out &&
-			git ls-files -o >out &&
-			test_line_count = 1 out &&
-
-			git rev-parse >actual \
-				:0:y/b :0:y/c :3:y/d &&
-			git rev-parse >expect \
-				 O:z/b  O:z/c  O:x/d
-		fi &&
+		git rev-parse >actual \
+			:0:y/b :0:y/c :1:y/d :3:y/d &&
+		git rev-parse >expect \
+			 O:z/b  O:z/c  O:x/d  O:x/d &&
 		test_cmp expect actual
 	)
 '
@@ -2027,7 +1986,7 @@ test_expect_success '7d: transitive rename involved in rename/delete; how is it 
 #         how it's resolved.
 
 test_setup_7e () {
-	test_create_repo 7e &&
+	git init 7e &&
 	(
 		cd 7e &&
 
@@ -2071,34 +2030,19 @@ test_expect_success '7e: transitive rename in rename/delete AND dirs in the way'
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (rename/delete).*x/d.*y/d" out &&
+		test_grep "CONFLICT (rename/delete).*x/d.*y/d" out &&
 
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			git ls-files -s >out &&
-			test_line_count = 6 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 1 out &&
+		git ls-files -s >out &&
+		test_line_count = 6 out &&
+		git ls-files -u >out &&
+		test_line_count = 2 out &&
+		git ls-files -o >out &&
+		test_line_count = 1 out &&
 
-			git rev-parse >actual \
-				:0:x/d/f :0:y/d/g :0:y/b :0:y/c :1:y/d~B^0 :3:y/d~B^0 &&
-			git rev-parse >expect \
-				 A:x/d/f  A:y/d/g  O:z/b  O:z/c  O:x/d      O:x/d
-		else
-			git ls-files -s >out &&
-			test_line_count = 5 out &&
-			git ls-files -u >out &&
-			test_line_count = 1 out &&
-			git ls-files -o >out &&
-			test_line_count = 2 out &&
-
-			git rev-parse >actual \
-				:0:x/d/f :0:y/d/g :0:y/b :0:y/c :3:y/d &&
-			git rev-parse >expect \
-				 A:x/d/f  A:y/d/g  O:z/b  O:z/c  O:x/d
-		fi &&
+		git rev-parse >actual \
+			:0:x/d/f :0:y/d/g :0:y/b :0:y/c :1:y/d~B^0 :3:y/d~B^0 &&
+		git rev-parse >expect \
+			 A:x/d/f  A:y/d/g  O:z/b  O:z/c  O:x/d      O:x/d &&
 		test_cmp expect actual &&
 
 		git hash-object y/d~B^0 >actual &&
@@ -2137,7 +2081,7 @@ test_expect_success '7e: transitive rename in rename/delete AND dirs in the way'
 # we potentially could.
 
 test_setup_8a () {
-	test_create_repo 8a &&
+	git init 8a &&
 	(
 		cd 8a &&
 
@@ -2216,7 +2160,7 @@ test_expect_success '8a: Dual-directory rename, one into the others way' '
 # e_1 and e_2.
 
 test_setup_8b () {
-	test_create_repo 8b &&
+	git init 8b &&
 	(
 		cd 8b &&
 
@@ -2290,7 +2234,7 @@ test_expect_success '8b: Dual-directory rename, one into the others way, with co
 #         notes in 8d.
 
 test_setup_8c () {
-	test_create_repo 8c &&
+	git init 8c &&
 	(
 		cd 8c &&
 
@@ -2330,7 +2274,7 @@ test_expect_success '8c: modify/delete or rename+modify/delete' '
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (modify/delete).* z/d" out &&
+		test_grep "CONFLICT (modify/delete).* z/d" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 5 out &&
@@ -2370,7 +2314,7 @@ test_expect_success '8c: modify/delete or rename+modify/delete' '
 #   differently.
 
 test_setup_8d () {
-	test_create_repo 8d &&
+	git init 8d &&
 	(
 		cd 8d &&
 
@@ -2453,7 +2397,7 @@ test_expect_success '8d: rename/delete...or not?' '
 #        the behavior, and predict it without computing as many details.
 
 test_setup_8e () {
-	test_create_repo 8e &&
+	git init 8e &&
 	(
 		cd 8e &&
 
@@ -2491,8 +2435,8 @@ test_expect_success '8e: Both sides rename, one side adds to original directory'
 		git checkout A^0 &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		test_i18ngrep CONFLICT.*rename/rename.*z/c.*y/c.*w/c out &&
-		test_i18ngrep CONFLICT.*rename/rename.*z/b.*y/b.*w/b out &&
+		test_grep CONFLICT.*rename/rename.*z/c.*y/c.*w/c out &&
+		test_grep CONFLICT.*rename/rename.*z/b.*y/b.*w/b out &&
 
 		git ls-files -s >out &&
 		test_line_count = 7 out &&
@@ -2537,7 +2481,7 @@ test_expect_success '8e: Both sides rename, one side adds to original directory'
 #         of that could take the new file in commit B at z/i to x/w/i or x/i.
 
 test_setup_9a () {
-	test_create_repo 9a &&
+	git init 9a &&
 	(
 		cd 9a &&
 
@@ -2609,7 +2553,7 @@ test_expect_success '9a: Inner renamed directory within outer renamed directory'
 #   Expected: y/{b,c,d_merged}
 
 test_setup_9b () {
-	test_create_repo 9b &&
+	git init 9b &&
 	(
 		cd 9b &&
 
@@ -2697,7 +2641,7 @@ test_expect_success '9b: Transitive rename with content merge' '
 #         history for any implicit directory renames.
 
 test_setup_9c () {
-	test_create_repo 9c &&
+	git init 9c &&
 	(
 		cd 9c &&
 
@@ -2741,7 +2685,7 @@ test_expect_success '9c: Doubly transitive rename?' '
 		git checkout A^0 &&
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "WARNING: Avoiding applying x -> z rename to x/f" out &&
+		test_grep "WARNING: Avoiding applying x -> z rename to x/f" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 6 out &&
@@ -2786,7 +2730,7 @@ test_expect_success '9c: Doubly transitive rename?' '
 #   testcases and simplifies things for the user.
 
 test_setup_9d () {
-	test_create_repo 9d &&
+	git init 9d &&
 	(
 		cd 9d &&
 
@@ -2830,10 +2774,10 @@ test_expect_success '9d: N-way transitive rename?' '
 		git checkout A^0 &&
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
-		test_i18ngrep "WARNING: Avoiding applying z -> y rename to z/t" out &&
-		test_i18ngrep "WARNING: Avoiding applying y -> x rename to y/a" out &&
-		test_i18ngrep "WARNING: Avoiding applying x -> w rename to x/b" out &&
-		test_i18ngrep "WARNING: Avoiding applying w -> v rename to w/c" out &&
+		test_grep "WARNING: Avoiding applying z -> y rename to z/t" out &&
+		test_grep "WARNING: Avoiding applying y -> x rename to y/a" out &&
+		test_grep "WARNING: Avoiding applying x -> w rename to x/b" out &&
+		test_grep "WARNING: Avoiding applying w -> v rename to w/c" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 7 out &&
@@ -2861,7 +2805,7 @@ test_expect_success '9d: N-way transitive rename?' '
 #             dir1/yo, dir2/yo, dir3/yo, dirN/yo
 
 test_setup_9e () {
-	test_create_repo 9e &&
+	git init 9e &&
 	(
 		cd 9e &&
 
@@ -2905,7 +2849,7 @@ test_setup_9e () {
 	)
 }
 
-test_expect_success C_LOCALE_OUTPUT '9e: N-to-1 whammo' '
+test_expect_success '9e: N-to-1 whammo' '
 	test_setup_9e &&
 	(
 		cd 9e &&
@@ -2914,10 +2858,10 @@ test_expect_success C_LOCALE_OUTPUT '9e: N-to-1 whammo' '
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out &&
 		grep "CONFLICT (implicit dir rename): Cannot map more than one path to combined/yo" out >error_line &&
-		grep -q dir1/yo error_line &&
-		grep -q dir2/yo error_line &&
-		grep -q dir3/yo error_line &&
-		grep -q dirN/yo error_line &&
+		test_grep -q dir1/yo error_line &&
+		test_grep -q dir2/yo error_line &&
+		test_grep -q dir3/yo error_line &&
+		test_grep -q dirN/yo error_line &&
 
 		git ls-files -s >out &&
 		test_line_count = 16 out &&
@@ -2954,7 +2898,7 @@ test_expect_success C_LOCALE_OUTPUT '9e: N-to-1 whammo' '
 #   Expected: priority/{a,b}/$more_files, priority/c
 
 test_setup_9f () {
-	test_create_repo 9f &&
+	git init 9f &&
 	(
 		cd 9f &&
 
@@ -3027,7 +2971,7 @@ test_expect_success '9f: Renamed directory that only contained immediate subdirs
 # viewpoint...
 
 test_setup_9g () {
-	test_create_repo 9g &&
+	git init 9g &&
 	(
 		cd 9g &&
 
@@ -3096,7 +3040,7 @@ test_expect_failure '9g: Renamed directory that only contained immediate subdirs
 #   NOTE: If we applied the z/ -> y/ rename to z/d, then we'd end up with
 #         a rename/rename(1to2) conflict (z/d -> y/d vs. x/d)
 test_setup_9h () {
-	test_create_repo 9h &&
+	git init 9h &&
 	(
 		cd 9h &&
 
@@ -3177,7 +3121,7 @@ test_expect_success '9h: Avoid dir rename on merely modified path' '
 #       ERROR_MSG(untracked working tree files would be overwritten by merge)
 
 test_setup_10a () {
-	test_create_repo 10a &&
+	git init 10a &&
 	(
 		cd 10a &&
 
@@ -3215,7 +3159,7 @@ test_expect_success '10a: Overwrite untracked with normal rename/delete' '
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
 		test_path_is_missing .git/MERGE_HEAD &&
-		test_i18ngrep "The following untracked working tree files would be overwritten by merge" err &&
+		test_grep "The following untracked working tree files would be overwritten by merge" err &&
 
 		git ls-files -s >out &&
 		test_line_count = 1 out &&
@@ -3243,7 +3187,7 @@ test_expect_success '10a: Overwrite untracked with normal rename/delete' '
 #       ERROR_MSG(refusing to lose untracked file at 'y/d')
 
 test_setup_10b () {
-	test_create_repo 10b &&
+	git init 10b &&
 	(
 		cd 10b &&
 
@@ -3284,34 +3228,15 @@ test_expect_success '10b: Overwrite untracked with dir rename + delete' '
 		echo contents >y/e &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: The following untracked working tree files would be overwritten by merge" err &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: The following untracked working tree files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 1 out &&
-			git ls-files -u >out &&
-			test_line_count = 0 out &&
-			git ls-files -o >out &&
-			test_line_count = 5 out
-		else
-			test_i18ngrep "CONFLICT (rename/delete).*Version B\^0 of y/d left in tree at y/d~B\^0" out &&
-			test_i18ngrep "Error: Refusing to lose untracked file at y/e; writing to y/e~B\^0 instead" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 3 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 5 out &&
-
-			git rev-parse >actual \
-				:0:y/b :3:y/d :3:y/e &&
-			git rev-parse >expect \
-				O:z/b  O:z/c  B:z/e &&
-			test_cmp expect actual
-		fi &&
+		git ls-files -s >out &&
+		test_line_count = 1 out &&
+		git ls-files -u >out &&
+		test_line_count = 0 out &&
+		git ls-files -o >out &&
+		test_line_count = 5 out &&
 
 		echo very >expect &&
 		test_cmp expect y/c &&
@@ -3334,7 +3259,7 @@ test_expect_success '10b: Overwrite untracked with dir rename + delete' '
 #             ERROR_MSG(Refusing to lose untracked file at y/c)
 
 test_setup_10c () {
-	test_create_repo 10c_$1 &&
+	git init 10c_$1 &&
 	(
 		cd 10c_$1 &&
 
@@ -3374,38 +3299,15 @@ test_expect_success '10c1: Overwrite untracked with dir rename/rename(1to2)' '
 		echo important >y/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: The following untracked working tree files would be overwritten by merge" err &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: The following untracked working tree files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 4 out &&
-			git ls-files -u >out &&
-			test_line_count = 0 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out
-		else
-			test_i18ngrep "CONFLICT (rename/rename)" out &&
-			test_i18ngrep "Refusing to lose untracked file at y/c; adding as y/c~B\^0 instead" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 6 out &&
-			git ls-files -u >out &&
-			test_line_count = 3 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:y/a :0:y/b :0:x/d :1:x/c :2:w/c :3:y/c &&
-			git rev-parse >expect \
-				 O:z/a  O:z/b  O:x/d  O:x/c  O:x/c  O:x/c &&
-			test_cmp expect actual &&
-
-			git hash-object y/c~B^0 >actual &&
-			git rev-parse O:x/c >expect &&
-			test_cmp expect actual
-		fi &&
+		git ls-files -s >out &&
+		test_line_count = 4 out &&
+		git ls-files -u >out &&
+		test_line_count = 0 out &&
+		git ls-files -o >out &&
+		test_line_count = 3 out &&
 
 		echo important >expect &&
 		test_cmp expect y/c
@@ -3425,38 +3327,15 @@ test_expect_success '10c2: Overwrite untracked with dir rename/rename(1to2), oth
 		echo important >y/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive A^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: The following untracked working tree files would be overwritten by merge" err &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: The following untracked working tree files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 4 out &&
-			git ls-files -u >out &&
-			test_line_count = 0 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out
-		else
-			test_i18ngrep "CONFLICT (rename/rename)" out &&
-			test_i18ngrep "Refusing to lose untracked file at y/c; adding as y/c~HEAD instead" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 6 out &&
-			git ls-files -u >out &&
-			test_line_count = 3 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:y/a :0:y/b :0:x/d :1:x/c :3:w/c :2:y/c &&
-			git rev-parse >expect \
-				 O:z/a  O:z/b  O:x/d  O:x/c  O:x/c  O:x/c &&
-			test_cmp expect actual &&
-
-			git hash-object y/c~HEAD >actual &&
-			git rev-parse O:x/c >expect &&
-			test_cmp expect actual
-		fi &&
+		git ls-files -s >out &&
+		test_line_count = 4 out &&
+		git ls-files -u >out &&
+		test_line_count = 0 out &&
+		git ls-files -o >out &&
+		test_line_count = 3 out &&
 
 		echo important >expect &&
 		test_cmp expect y/c
@@ -3472,7 +3351,7 @@ test_expect_success '10c2: Overwrite untracked with dir rename/rename(1to2), oth
 #             ERROR_MSG(Refusing to lose untracked file at y/wham)
 
 test_setup_10d () {
-	test_create_repo 10d &&
+	git init 10d &&
 	(
 		cd 10d &&
 
@@ -3514,47 +3393,15 @@ test_expect_success '10d: Delete untracked with dir rename/rename(2to1)' '
 		echo important >y/wham &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: The following untracked working tree files would be overwritten by merge" err &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: The following untracked working tree files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 6 out &&
-			git ls-files -u >out &&
-			test_line_count = 0 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out
-		else
-			test_i18ngrep "CONFLICT (rename/rename)" out &&
-			test_i18ngrep "Refusing to lose untracked file at y/wham" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 6 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:y/a :0:y/b :0:y/d :0:y/e :2:y/wham :3:y/wham &&
-			git rev-parse >expect \
-				 O:z/a  O:z/b  O:x/d  O:x/e  O:z/c     O:x/f &&
-			test_cmp expect actual &&
-
-			test_must_fail git rev-parse :1:y/wham &&
-
-			# Test that two-way merge in y/wham~merged is as expected
-			git cat-file -p :2:y/wham >expect &&
-			git cat-file -p :3:y/wham >other &&
-			>empty &&
-			test_must_fail git merge-file \
-				-L "HEAD" \
-				-L "" \
-				-L "B^0" \
-				expect empty other &&
-			test_cmp expect y/wham~merged
-		fi &&
+		git ls-files -s >out &&
+		test_line_count = 6 out &&
+		git ls-files -u >out &&
+		test_line_count = 0 out &&
+		git ls-files -o >out &&
+		test_line_count = 3 out &&
 
 		echo important >expect &&
 		test_cmp expect y/wham
@@ -3568,7 +3415,7 @@ test_expect_success '10d: Delete untracked with dir rename/rename(2to1)' '
 #   Expected: y/{a,b,c} + untracked z/c
 
 test_setup_10e () {
-	test_create_repo 10e &&
+	git init 10e &&
 	(
 		cd 10e &&
 
@@ -3596,7 +3443,7 @@ test_setup_10e () {
 	)
 }
 
-test_expect_merge_algorithm failure success '10e: Does git complain about untracked file that is not really in the way?' '
+test_expect_success '10e: Does git complain about untracked file that is not really in the way?' '
 	test_setup_10e &&
 	(
 		cd 10e &&
@@ -3606,7 +3453,7 @@ test_expect_merge_algorithm failure success '10e: Does git complain about untrac
 		echo random >z/c &&
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		test_i18ngrep ! "following untracked working tree files would be overwritten by merge" err &&
+		test_grep ! "following untracked working tree files would be overwritten by merge" err &&
 
 		git ls-files -s >out &&
 		test_line_count = 3 out &&
@@ -3650,7 +3497,7 @@ test_expect_merge_algorithm failure success '10e: Does git complain about untrac
 #             z/c with uncommitted mods on top of A:z/c_v1
 
 test_setup_11a () {
-	test_create_repo 11a &&
+	git init 11a &&
 	(
 		cd 11a &&
 
@@ -3687,30 +3534,8 @@ test_expect_success '11a: Avoid losing dirty contents with simple rename' '
 		echo stuff >>z/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			test_i18ngrep "Refusing to lose dirty file at z/c" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 2 out &&
-			git ls-files -u >out &&
-			test_line_count = 1 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:z/a :2:z/c &&
-			git rev-parse >expect \
-				 O:z/a  B:z/b &&
-			test_cmp expect actual &&
-
-			git hash-object z/c~HEAD >actual &&
-			git rev-parse B:z/b >expect &&
-			test_cmp expect actual
-		fi &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
 		test_seq 1 10 >expected &&
 		echo stuff >>expected &&
@@ -3728,7 +3553,7 @@ test_expect_success '11a: Avoid losing dirty contents with simple rename' '
 
 
 test_setup_11b () {
-	test_create_repo 11b &&
+	git init 11b &&
 	(
 		cd 11b &&
 
@@ -3766,36 +3591,11 @@ test_expect_success '11b: Avoid losing dirty file involved in directory rename' 
 		git checkout A^0 &&
 		echo stuff >>z/c &&
 
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-			test_i18ngrep "Refusing to lose dirty file at z/c" out &&
+		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 3 out &&
-			git ls-files -u >out &&
-			test_line_count = 0 out &&
-			git ls-files -m >out &&
-			test_line_count = 0 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:x/b :0:y/a :0:y/c &&
-			git rev-parse >expect \
-				 O:x/b  O:z/a  B:x/c &&
-			test_cmp expect actual &&
-
-			git hash-object y/c >actual &&
-			git rev-parse B:x/c >expect &&
-			test_cmp expect actual
-		fi &&
-
-		grep -q stuff z/c &&
+		test_grep -q stuff z/c &&
 		test_seq 1 10 >expected &&
 		echo stuff >>expected &&
 		test_cmp expected z/c
@@ -3810,7 +3610,7 @@ test_expect_success '11b: Avoid losing dirty file involved in directory rename' 
 #             y/c left untouched (still has uncommitted mods)
 
 test_setup_11c () {
-	test_create_repo 11c &&
+	git init 11c &&
 	(
 		cd 11c &&
 
@@ -3850,15 +3650,10 @@ test_expect_success '11c: Avoid losing not-uptodate with rename + D/F conflict' 
 		echo stuff >>y/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			test_i18ngrep "following files would be overwritten by merge" err
-		fi &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
-		grep -q stuff y/c &&
+		test_grep -q stuff y/c &&
 		test_seq 1 10 >expected &&
 		echo stuff >>expected &&
 		test_cmp expected y/c &&
@@ -3883,7 +3678,7 @@ test_expect_success '11c: Avoid losing not-uptodate with rename + D/F conflict' 
 #             y/{a,c~HEAD,c/d}, x/b, now-untracked z/c_v1 with uncommitted mods
 
 test_setup_11d () {
-	test_create_repo 11d &&
+	git init 11d &&
 	(
 		cd 11d &&
 
@@ -3924,32 +3719,10 @@ test_expect_success '11d: Avoid losing not-uptodate with rename + D/F conflict' 
 		echo stuff >>z/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			test_i18ngrep "Refusing to lose dirty file at z/c" out &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
-			git ls-files -s >out &&
-			test_line_count = 4 out &&
-			git ls-files -u >out &&
-			test_line_count = 1 out &&
-			git ls-files -o >out &&
-			test_line_count = 4 out &&
-
-			git rev-parse >actual \
-				:0:x/b :0:y/a :0:y/c/d :3:y/c &&
-			git rev-parse >expect \
-				 O:x/b  O:z/a  B:y/c/d  B:x/c &&
-			test_cmp expect actual &&
-
-			git hash-object y/c~HEAD >actual &&
-			git rev-parse B:x/c >expect &&
-			test_cmp expect actual
-		fi &&
-
-		grep -q stuff z/c &&
+		test_grep -q stuff z/c &&
 		test_seq 1 10 >expected &&
 		echo stuff >>expected &&
 		test_cmp expected z/c
@@ -3968,7 +3741,7 @@ test_expect_success '11d: Avoid losing not-uptodate with rename + D/F conflict' 
 #             y/c has dirty file from before merge
 
 test_setup_11e () {
-	test_create_repo 11e &&
+	git init 11e &&
 	(
 		cd 11e &&
 
@@ -4010,39 +3783,8 @@ test_expect_success '11e: Avoid deleting not-uptodate with dir rename/rename(1to
 		echo mods >>y/c &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			test_i18ngrep "CONFLICT (rename/rename)" out &&
-			test_i18ngrep "Refusing to lose dirty file at y/c" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 7 out &&
-			git ls-files -u >out &&
-			test_line_count = 4 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			git rev-parse >actual \
-				:0:y/a :0:y/b :0:x/d :1:x/c :2:w/c :2:y/c :3:y/c &&
-			git rev-parse >expect \
-				 O:z/a  O:z/b  O:x/d  O:x/c  O:x/c  A:y/c  O:x/c &&
-			test_cmp expect actual &&
-
-			# See if y/c~merged has expected contents; requires manually
-			# doing the expected file merge
-			git cat-file -p A:y/c >c1 &&
-			git cat-file -p B:z/c >c2 &&
-			>empty &&
-			test_must_fail git merge-file \
-				-L "HEAD" \
-				-L "" \
-				-L "B^0" \
-				c1 empty c2 &&
-			test_cmp c1 y/c~merged
-		fi &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
 		echo different >expected &&
 		echo mods >>expected &&
@@ -4060,7 +3802,7 @@ test_expect_success '11e: Avoid deleting not-uptodate with dir rename/rename(1to
 #             ERROR_MSG(Refusing to lose dirty file at y/wham)
 
 test_setup_11f () {
-	test_create_repo 11f &&
+	git init 11f &&
 	(
 		cd 11f &&
 
@@ -4099,40 +3841,8 @@ test_expect_success '11f: Avoid deleting not-uptodate with dir rename/rename(2to
 		echo important >>y/wham &&
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_path_is_missing .git/MERGE_HEAD &&
-			test_i18ngrep "error: Your local changes to the following files would be overwritten by merge" err
-		else
-			test_i18ngrep "CONFLICT (rename/rename)" out &&
-			test_i18ngrep "Refusing to lose dirty file at y/wham" out &&
-
-			git ls-files -s >out &&
-			test_line_count = 4 out &&
-			git ls-files -u >out &&
-			test_line_count = 2 out &&
-			git ls-files -o >out &&
-			test_line_count = 3 out &&
-
-			test_must_fail git rev-parse :1:y/wham &&
-
-			git rev-parse >actual \
-				:0:y/a :0:y/b :2:y/wham :3:y/wham &&
-			git rev-parse >expect \
-				 O:z/a  O:z/b  O:x/c     O:x/d &&
-			test_cmp expect actual &&
-
-			# Test that two-way merge in y/wham~merged is as expected
-			git cat-file -p :2:y/wham >expect &&
-			git cat-file -p :3:y/wham >other &&
-			>empty &&
-			test_must_fail git merge-file \
-				-L "HEAD" \
-				-L "" \
-				-L "B^0" \
-				expect empty other &&
-			test_cmp expect y/wham~merged
-		fi &&
+		test_path_is_missing .git/MERGE_HEAD &&
+		test_grep "error: Your local changes to the following files would be overwritten by merge" err &&
 
 		test_seq 1 10 >expected &&
 		echo important >>expected &&
@@ -4155,7 +3865,7 @@ test_expect_success '11f: Avoid deleting not-uptodate with dir rename/rename(2to
 #   Expected: node1/{leaf1,leaf2,leaf5,node2/{leaf3,leaf4,leaf6}}
 
 test_setup_12a () {
-	test_create_repo 12a &&
+	git init 12a &&
 	(
 		cd 12a &&
 
@@ -4238,7 +3948,7 @@ test_expect_success '12a: Moving one directory hierarchy into another' '
 #             node2/node1/{leaf1, leaf2}
 
 test_setup_12b1 () {
-	test_create_repo 12b1 &&
+	git init 12b1 &&
 	(
 		cd 12b1 &&
 
@@ -4267,7 +3977,7 @@ test_setup_12b1 () {
 	)
 }
 
-test_expect_merge_algorithm failure success '12b1: Moving two directory hierarchies into each other' '
+test_expect_success '12b1: Moving two directory hierarchies into each other' '
 	test_setup_12b1 &&
 	(
 		cd 12b1 &&
@@ -4327,7 +4037,7 @@ test_expect_merge_algorithm failure success '12b1: Moving two directory hierarch
 #         even simple rules give weird results when given weird inputs.
 
 test_setup_12b2 () {
-	test_create_repo 12b2 &&
+	git init 12b2 &&
 	(
 		cd 12b2 &&
 
@@ -4402,7 +4112,7 @@ test_expect_success '12b2: Moving two directory hierarchies into each other' '
 #         each side of the merge.
 
 test_setup_12c1 () {
-	test_create_repo 12c1 &&
+	git init 12c1 &&
 	(
 		cd 12c1 &&
 
@@ -4421,21 +4131,21 @@ test_setup_12c1 () {
 
 		git checkout A &&
 		git mv node2/ node1/ &&
-		for i in `git ls-files`; do echo side A >>$i; done &&
+		for i in $(git ls-files); do echo side A >>$i; done &&
 		git add -u &&
 		test_tick &&
 		git commit -m "A" &&
 
 		git checkout B &&
 		git mv node1/ node2/ &&
-		for i in `git ls-files`; do echo side B >>$i; done &&
+		for i in $(git ls-files); do echo side B >>$i; done &&
 		git add -u &&
 		test_tick &&
 		git commit -m "B"
 	)
 }
 
-test_expect_merge_algorithm failure success '12c1: Moving one directory hierarchy into another w/ content merge' '
+test_expect_success '12c1: Moving one directory hierarchy into another w/ content merge' '
 	test_setup_12c1 &&
 	(
 		cd 12c1 &&
@@ -4492,7 +4202,7 @@ test_expect_merge_algorithm failure success '12c1: Moving one directory hierarch
 #         on each side of the merge.
 
 test_setup_12c2 () {
-	test_create_repo 12c2 &&
+	git init 12c2 &&
 	(
 		cd 12c2 &&
 
@@ -4511,7 +4221,7 @@ test_setup_12c2 () {
 
 		git checkout A &&
 		git mv node2/ node1/ &&
-		for i in `git ls-files`; do echo side A >>$i; done &&
+		for i in $(git ls-files); do echo side A >>$i; done &&
 		git add -u &&
 		echo leaf5 >node1/leaf5 &&
 		git add node1/leaf5 &&
@@ -4520,7 +4230,7 @@ test_setup_12c2 () {
 
 		git checkout B &&
 		git mv node1/ node2/ &&
-		for i in `git ls-files`; do echo side B >>$i; done &&
+		for i in $(git ls-files); do echo side B >>$i; done &&
 		git add -u &&
 		echo leaf6 >node2/leaf6 &&
 		git add node2/leaf6 &&
@@ -4584,7 +4294,7 @@ test_expect_success '12c2: Moving one directory hierarchy into another w/ conten
 #   Expected: subdir/foo, bar
 
 test_setup_12d () {
-	test_create_repo 12d &&
+	git init 12d &&
 	(
 		cd 12d &&
 
@@ -4642,7 +4352,7 @@ test_expect_success '12d: Rename/merge subdir into the root, variant 1' '
 #   Expected: foo, bar
 
 test_setup_12e () {
-	test_create_repo 12e &&
+	git init 12e &&
 	(
 		cd 12e &&
 
@@ -4743,7 +4453,7 @@ test_expect_success '12e: Rename/merge subdir into the root, variant 2' '
 #      pick and re-applying them in the subsequent one.
 
 test_setup_12f () {
-	test_create_repo 12f &&
+	git init 12f &&
 	(
 		cd 12f &&
 
@@ -4759,7 +4469,7 @@ test_setup_12f () {
 		echo g >dir/subdir/tweaked/g &&
 		echo h >dir/subdir/tweaked/h &&
 		test_seq 20 30 >dir/subdir/tweaked/Makefile &&
-		for i in `test_seq 1 88`; do
+		for i in $(test_seq 1 88); do
 			echo content $i >dir/unchanged/file_$i
 		done &&
 		git add . &&
@@ -4797,7 +4507,7 @@ test_setup_12f () {
 	)
 }
 
-test_expect_merge_algorithm failure success '12f: Trivial directory resolve, caching, all kinds of fun' '
+test_expect_success '12f: Trivial directory resolve, caching, all kinds of fun' '
 	test_setup_12f &&
 	(
 		cd 12f &&
@@ -4895,6 +4605,1009 @@ test_expect_merge_algorithm failure success '12f: Trivial directory resolve, cac
 	)
 '
 
+# Testcase 12g, Testcase with two kinds of "relevant" renames
+#   Commit O: somefile_O, subdir/{a_O,b_O}
+#   Commit A: somefile_A, subdir/{a_O,b_O,c_A}
+#   Commit B: newfile_B,  newdir/{a_B,b_B}
+#   Expected: newfile_{merged}, newdir/{a_B,b_B,c_A}
+
+test_setup_12g () {
+	git init 12g &&
+	(
+		cd 12g &&
+
+		mkdir -p subdir &&
+		test_write_lines upon a time there was a >somefile &&
+		test_write_lines 1 2 3 4 5 6 7 8 9 10 >subdir/a &&
+		test_write_lines one two three four five six >subdir/b &&
+		git add . &&
+		test_tick &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		test_write_lines once upon a time there was a >somefile &&
+		> subdir/c &&
+		git add somefile subdir/c &&
+		test_tick &&
+		git commit -m "A" &&
+
+		git checkout B &&
+		git mv somefile newfile &&
+		git mv subdir newdir &&
+		echo repo >>newfile &&
+		test_write_lines 1 2 3 4 5 6 7 8 9 10 11 >newdir/a &&
+		test_write_lines one two three four five six seven >newdir/b &&
+		git add newfile newdir &&
+		test_tick &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success '12g: Testcase with two kinds of "relevant" renames' '
+	test_setup_12g &&
+	(
+		cd 12g &&
+
+		git checkout A^0 &&
+
+		git -c merge.directoryRenames=true merge -s recursive B^0 &&
+
+		test_write_lines once upon a time there was a repo >expect &&
+		test_cmp expect newfile &&
+
+		git ls-files -s >out &&
+		test_line_count = 4 out &&
+
+		git rev-parse >actual \
+			HEAD:newdir/a  HEAD:newdir/b   HEAD:newdir/c &&
+		git rev-parse >expect \
+			B:newdir/a     B:newdir/b      A:subdir/c &&
+		test_cmp expect actual &&
+
+		test_must_fail git rev-parse HEAD:subdir/a &&
+		test_must_fail git rev-parse HEAD:subdir/b &&
+		test_must_fail git rev-parse HEAD:subdir/c &&
+		test_path_is_missing subdir/ &&
+		test_path_is_file newdir/c
+	)
+'
+
+# Testcase 12h, Testcase with two kinds of "relevant" renames
+#   Commit O: olddir/{a_1, b}
+#   Commit A: newdir/{a_2, b}
+#   Commit B: olddir/{alpha_1, b}
+#   Expected: newdir/{alpha_2, b}
+
+test_setup_12h () {
+	git init 12h &&
+	(
+		cd 12h &&
+
+		mkdir olddir &&
+		test_seq 3 8 >olddir/a &&
+		>olddir/b &&
+		git add olddir &&
+		git commit -m orig &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		test_seq 3 10 >olddir/a &&
+		git add olddir/a &&
+		git mv olddir newdir &&
+		git commit -m A &&
+
+		git switch B &&
+
+		git mv olddir/a olddir/alpha &&
+		git commit -m B
+	)
+}
+
+test_expect_failure '12h: renaming a file within a renamed directory' '
+	test_setup_12h &&
+	(
+		cd 12h &&
+
+		git checkout A^0 &&
+
+		test_might_fail git -c merge.directoryRenames=true merge -s recursive B^0 &&
+
+		git ls-files >tracked &&
+		test_line_count = 2 tracked &&
+
+		test_path_is_missing olddir/a &&
+		test_path_is_file newdir/alpha &&
+		test_path_is_file newdir/b &&
+
+		git rev-parse >actual \
+			HEAD:newdir/alpha  HEAD:newdir/b &&
+		git rev-parse >expect \
+			A:newdir/a         O:oldir/b &&
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12i, Directory rename causes rename-to-self
+#   Commit O: source/{subdir/foo, bar, baz_1}
+#   Commit A: source/{foo, bar, baz_1}
+#   Commit B: source/{subdir/{foo, bar}, baz_2}
+#   Expected: source/{foo, bar, baz_2}, with conflicts on
+#                source/bar vs. source/subdir/bar
+
+test_setup_12i () {
+	git init 12i &&
+	(
+		cd 12i &&
+
+		mkdir -p source/subdir &&
+		echo foo >source/subdir/foo &&
+		printf "%d\n" 1 2 3 4 5 6 7 >source/bar &&
+		echo baz >source/baz &&
+		git add source &&
+		git commit -m orig &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv source/subdir/foo source/foo &&
+		git commit -m A &&
+
+		git switch B &&
+		git mv source/bar source/subdir/bar &&
+		echo more baz >>source/baz &&
+		git add source/baz &&
+		git commit -m B
+	)
+}
+
+test_expect_success '12i: Directory rename causes rename-to-self' '
+	test_setup_12i &&
+	(
+		cd 12i &&
+
+		git checkout A^0 &&
+
+		# NOTE: A potentially better resolution would be for
+		#     source/bar -> source/subdir/bar
+		# to use the directory rename to become
+		#     source/bar -> source/bar
+		# (a rename to self), and thus we end up with bar with
+		# a path conflict (given merge.directoryRenames=conflict).
+		# However, since the relevant renames optimization
+		# prevents us from noticing
+		#     source/bar -> source/subdir/bar
+		# as a rename and looking at it just as
+		#     delete source/bar
+		#     add source/subdir/bar
+		# the directory rename of source/subdir/bar -> source/bar does
+		# not look like a rename-to-self situation but a
+		# rename-on-top-of-other-file situation.  We do not want
+		# stage 1 entries from an unrelated file, so we expect an
+		# error about there being a file in the way.
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+
+		test_grep "CONFLICT (implicit dir rename).*source/bar in the way" out &&
+		test_path_is_missing source/bar &&
+		test_path_is_file source/subdir/bar &&
+		test_path_is_file source/baz &&
+
+		git ls-files >actual &&
+		uniq <actual >tracked &&
+		test_line_count = 3 tracked &&
+
+		git status --porcelain -uno >actual &&
+		cat >expect <<-\EOF &&
+		M  source/baz
+		R  source/bar -> source/subdir/bar
+		EOF
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12i2, Identical to 12i except that source/subdir/bar modified on unrenamed side
+#   Commit O: source/{subdir/foo, bar, baz_1}
+#   Commit A: source/{foo, bar_2, baz_1}
+#   Commit B: source/{subdir/{foo, bar}, baz_2}
+#   Expected: source/{foo, bar, baz_2}, with conflicts on
+#                source/bar vs. source/subdir/bar
+
+test_setup_12i2 () {
+	git init 12i2 &&
+	(
+		cd 12i2 &&
+
+		mkdir -p source/subdir &&
+		echo foo >source/subdir/foo &&
+		printf "%d\n" 1 2 3 4 5 6 7 >source/bar &&
+		echo baz >source/baz &&
+		git add source &&
+		git commit -m orig &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv source/subdir/foo source/foo &&
+		echo 8 >> source/bar &&
+		git add source/bar &&
+		git commit -m A &&
+
+		git switch B &&
+		git mv source/bar source/subdir/bar &&
+		echo more baz >>source/baz &&
+		git add source/baz &&
+		git commit -m B
+	)
+}
+
+test_expect_success '12i2: Directory rename causes rename-to-self' '
+	test_setup_12i2 &&
+	(
+		cd 12i2 &&
+
+		git checkout A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 &&
+
+		test_path_is_missing source/subdir &&
+		test_path_is_file source/bar &&
+		test_path_is_file source/baz &&
+
+		git ls-files >actual &&
+		uniq <actual >tracked &&
+		test_line_count = 3 tracked &&
+
+		git status --porcelain -uno >actual &&
+		cat >expect <<-\EOF &&
+		UU source/bar
+		M  source/baz
+		EOF
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12j, Directory rename to root causes rename-to-self
+#   Commit O: {subdir/foo, bar, baz_1}
+#   Commit A: {foo, bar, baz_1}
+#   Commit B: {subdir/{foo, bar}, baz_2}
+#   Expected: {foo, bar, baz_2}, with conflicts on bar vs. subdir/bar
+
+test_setup_12j () {
+	git init 12j &&
+	(
+		cd 12j &&
+
+		mkdir -p subdir &&
+		echo foo >subdir/foo &&
+		echo bar >bar &&
+		echo baz >baz &&
+		git add . &&
+		git commit -m orig &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv subdir/foo foo &&
+		git commit -m A &&
+
+		git switch B &&
+		git mv bar subdir/bar &&
+		echo more baz >>baz &&
+		git add baz &&
+		git commit -m B
+	)
+}
+
+test_expect_success '12j: Directory rename to root causes rename-to-self' '
+	test_setup_12j &&
+	(
+		cd 12j &&
+
+		git checkout A^0 &&
+
+		# NOTE: A potentially better resolution would be for
+		#     bar -> subdir/bar
+		# to use the directory rename to become
+		#     bar -> bar
+		# (a rename to self), and thus we end up with bar with
+		# a path conflict (given merge.directoryRenames=conflict).
+		# However, since the relevant renames optimization
+		# prevents us from noticing
+		#     bar -> subdir/bar
+		# as a rename and looking at it just as
+		#     delete bar
+		#     add subdir/bar
+		# the directory rename of subdir/bar -> bar does not look
+		# like a rename-to-self situation but a
+		# rename-on-top-of-other-file situation.  We do not want
+		# stage 1 entries from an unrelated file, so we expect an
+		# error about there being a file in the way.
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+		test_grep "CONFLICT (implicit dir rename).*bar in the way" out &&
+
+		test_path_is_missing bar &&
+		test_path_is_file subdir/bar &&
+		test_path_is_file baz &&
+
+		git ls-files >actual &&
+		uniq <actual >tracked &&
+		test_line_count = 3 tracked &&
+
+		git status --porcelain -uno >actual &&
+		cat >expect <<-\EOF &&
+		M  baz
+		R  bar -> subdir/bar
+		EOF
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12k, Directory rename with sibling causes rename-to-self
+#   Commit O: dirB/foo, dirA/{bar, baz_1}
+#   Commit A: dirA/{foo, bar, baz_1}
+#   Commit B: dirB/{foo, bar}, dirA/baz_2
+#   Expected: dirA/{foo, bar, baz_2}, with conflicts on dirA/bar vs. dirB/bar
+
+test_setup_12k () {
+	git init 12k &&
+	(
+		cd 12k &&
+
+		mkdir dirA dirB &&
+		echo foo >dirB/foo &&
+		echo bar >dirA/bar &&
+		echo baz >dirA/baz &&
+		git add . &&
+		git commit -m orig &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv dirB/* dirA/ &&
+		git commit -m A &&
+
+		git switch B &&
+		git mv dirA/bar dirB/bar &&
+		echo more baz >>dirA/baz &&
+		git add dirA/baz &&
+		git commit -m B
+	)
+}
+
+test_expect_success '12k: Directory rename with sibling causes rename-to-self' '
+	test_setup_12k &&
+	(
+		cd 12k &&
+
+		git checkout A^0 &&
+
+		# NOTE: A potentially better resolution would be for
+		#     dirA/bar -> dirB/bar
+		# to use the directory rename (dirB/ -> dirA/) to become
+		#     dirA/bar -> dirA/bar
+		# (a rename to self), and thus we end up with bar with
+		# a path conflict (given merge.directoryRenames=conflict).
+		# However, since the relevant renames optimization
+		# prevents us from noticing
+		#     dirA/bar -> dirB/bar
+		# as a rename and looking at it just as
+		#     delete dirA/bar
+		#     add dirB/bar
+		# the directory rename of dirA/bar -> dirB/bar does
+		# not look like a rename-to-self situation but a
+		# rename-on-top-of-other-file situation.  We do not want
+		# stage 1 entries from an unrelated file, so we expect an
+		# error about there being a file in the way.
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+		test_grep "CONFLICT (implicit dir rename).*dirA/bar in the way" out &&
+
+		test_path_is_missing dirA/bar &&
+		test_path_is_file dirB/bar &&
+		test_path_is_file dirA/baz &&
+
+		git ls-files >actual &&
+		uniq <actual >tracked &&
+		test_line_count = 3 tracked &&
+
+		git status --porcelain -uno >actual &&
+		cat >expect <<-\EOF &&
+		M  dirA/baz
+		R  dirA/bar -> dirB/bar
+		EOF
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12l, Both sides rename a directory into the other side, both add
+#   a file which after directory renames are the same filename
+#   Commit O: sub1/file,                 sub2/other
+#   Commit A: sub3/file,                 sub2/{other, new_add_add_file_1}
+#   Commit B: sub1/{file, newfile}, sub1/sub2/{other, new_add_add_file_2}
+#
+#   In words:
+#     A: sub1/ -> sub3/, add sub2/new_add_add_file_1
+#     B: sub2/ -> sub1/sub2, add sub1/newfile, add sub1/sub2/new_add_add_file_2
+#
+#   Expected: sub3/{file, newfile, sub2/other}
+#             CONFLICT (add/add): sub1/sub2/new_add_add_file
+#
+#   Note that sub1/newfile is not extraneous.  Directory renames are only
+#   detected if they are needed, and they are only needed if the old directory
+#   had a new file added on the opposite side of history.  So sub1/newfile
+#   is needed for there to be a sub1/ -> sub3/ rename.
+
+test_setup_12l () {
+	git init 12l_$1 &&
+	(
+		cd 12l_$1 &&
+
+		mkdir sub1 sub2
+		echo file >sub1/file &&
+		echo other >sub2/other &&
+		git add sub1 sub2 &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git checkout A &&
+		git mv sub1 sub3 &&
+		echo conflicting >sub2/new_add_add_file &&
+		git add sub2 &&
+		test_tick &&
+		git add -u &&
+		git commit -m "A" &&
+
+		git checkout B &&
+		echo dissimilar >sub2/new_add_add_file &&
+		echo brand >sub1/newfile &&
+		git add sub1 sub2 &&
+		git mv sub2 sub1 &&
+		test_tick &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success '12l (B into A): Rename into each other + add/add conflict' '
+	test_setup_12l BintoA &&
+	(
+		cd 12l_BintoA &&
+
+		git checkout -q A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 &&
+
+		test_stdout_line_count = 5 git ls-files -s &&
+
+		git rev-parse >actual \
+			:0:sub3/file :0:sub3/newfile :0:sub3/sub2/other \
+			:2:sub1/sub2/new_add_add_file \
+			:3:sub1/sub2/new_add_add_file &&
+		git rev-parse >expect \
+			O:sub1/file  B:sub1/newfile O:sub2/other \
+			A:sub2/new_add_add_file \
+			B:sub1/sub2/new_add_add_file &&
+		test_cmp expect actual &&
+
+		git ls-files -o >actual &&
+		test_write_lines actual expect >expect &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success '12l (A into B): Rename into each other + add/add conflict' '
+	test_setup_12l AintoB &&
+	(
+		cd 12l_AintoB &&
+
+		git checkout -q B^0 &&
+
+		test_must_fail git -c merge.directoryRenames=true merge -s recursive A^0 &&
+
+		test_stdout_line_count = 5 git ls-files -s &&
+
+		git rev-parse >actual \
+			:0:sub3/file :0:sub3/newfile :0:sub3/sub2/other \
+			:2:sub1/sub2/new_add_add_file \
+			:3:sub1/sub2/new_add_add_file &&
+		git rev-parse >expect \
+			O:sub1/file  B:sub1/newfile O:sub2/other \
+			B:sub1/sub2/new_add_add_file \
+			A:sub2/new_add_add_file &&
+		test_cmp expect actual &&
+
+		git ls-files -o >actual &&
+		test_write_lines actual expect >expect &&
+		test_cmp expect actual
+	)
+'
+
+# Testcase 12m, Directory rename, plus change of parent dir to symlink
+#   Commit O:  dir/subdir/file
+#   Commit A:  renamed-dir/subdir/file
+#   Commit B:  dir/subdir
+#   In words:
+#     A: dir/subdir/ -> renamed-dir/subdir
+#     B: delete dir/subdir/file, add dir/subdir as symlink
+#
+#   Expected: CONFLICT (rename/delete): renamed-dir/subdir/file,
+#             CONFLICT (file location): renamed-dir/subdir vs. dir/subdir
+#             CONFLICT (directory/file): renamed-dir/subdir symlink has
+#                                        renamed-dir/subdir in the way
+
+test_setup_12m () {
+	git init 12m &&
+	(
+		cd 12m &&
+
+		mkdir -p dir/subdir &&
+		echo 1 >dir/subdir/file &&
+		git add . &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv dir/ renamed-dir/ &&
+		git add . &&
+		git commit -m "A" &&
+
+		git switch B &&
+		git rm dir/subdir/file &&
+		mkdir dir &&
+		if test_have_prereq MINGW
+		then
+			cmd //c 'mklink dir\subdir NUL'
+		else
+			ln -s /dev/null dir/subdir
+		fi &&
+		git add . &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success SYMLINKS '12m: Change parent of renamed-dir to symlink on other side' '
+	test_setup_12m &&
+	(
+		cd 12m &&
+
+		git checkout -q A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 &&
+
+		test_stdout_line_count = 3 git ls-files -s &&
+		test_stdout_line_count = 2 ls -1 renamed-dir &&
+		test_path_is_missing dir
+	)
+'
+
+# Testcase 12n, Directory rename transitively makes rename back to self
+#
+# (Since this is a cherry-pick instead of merge, the labels are a bit weird.
+#  O, the original commit, is A~1 rather than what branch O points to.)
+#
+#   Commit O:  tools/hello
+#              world
+#   Commit A:  tools/hello
+#              tools/world
+#   Commit B:  hello
+#   In words:
+#     A: world -> tools/world
+#     B: tools/ -> /, i.e. rename all of tools to toplevel directory
+#        delete world
+#
+#   Expected:
+#             CONFLICT (file location): tools/world vs. world
+#
+
+test_setup_12n () {
+	git init 12n &&
+	(
+		cd 12n &&
+
+		mkdir tools &&
+		echo hello >tools/hello &&
+		git add tools/hello &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		echo world >world &&
+		git add world &&
+		git commit -q world -m 'Add world' &&
+
+		git mv world tools/world &&
+		git commit -m "Move world into tools/" &&
+
+		git switch B &&
+		git mv tools/hello hello &&
+		git commit -m "Move hello from tools/ to toplevel"
+	)
+}
+
+test_expect_success '12n: Directory rename transitively makes rename back to self' '
+	test_setup_12n &&
+	(
+		cd 12n &&
+
+		git checkout -q B^0 &&
+
+		test_must_fail git cherry-pick A^0 >out &&
+		test_grep "CONFLICT (file location).*should perhaps be moved" out &&
+
+		# Should have 1 entry for hello, and 2 for world
+		test_stdout_line_count = 3 git ls-files -s &&
+		test_stdout_line_count = 1 git ls-files -s hello &&
+		test_stdout_line_count = 2 git ls-files -s world
+	)
+'
+
+# Testcase 12n2, Directory rename transitively makes rename back to self
+#
+#   Commit O:  tools/hello
+#              world
+#   Commit A:  tools/hello
+#              tools/world
+#   Commit B:  hello
+#   In words:
+#     A: world -> tools/world
+#     B: tools/ -> /, i.e. rename all of tools to toplevel directory
+#        delete world
+#
+#   Expected:
+#             CONFLICT (file location): tools/world vs. world
+#
+
+test_setup_12n2 () {
+	git init 12n2 &&
+	(
+		cd 12n2 &&
+
+		mkdir tools &&
+		echo hello >tools/hello &&
+		git add tools/hello &&
+		echo world >world &&
+		git add world &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv world tools/world &&
+		git commit -m "Move world into tools/" &&
+
+		git switch B &&
+		git mv tools/hello hello &&
+		git rm world &&
+		git commit -m "Move hello from tools/ to toplevel"
+	)
+}
+
+test_expect_success '12n2: Directory rename transitively makes rename back to self' '
+	test_setup_12n2 &&
+	(
+		cd 12n2 &&
+
+		git checkout -q B^0 &&
+
+		test_might_fail git -c merge.directoryRenames=true merge A^0 >out &&
+
+		# Should have 1 entry for hello, and either 0 or 2 for world
+		#
+		# NOTE: Since merge.directoryRenames=true, there is no path
+		# conflict for world vs. tools/world; it should end up at
+		# world.  The fact that world was unmodified on side A, means
+		# there was no content conflict; we should just take the
+		# content from side B -- i.e. delete the file.  So merging
+		# could just delete world.
+		#
+		# However, rename-to-self-via-directory-rename is a bit more
+		# challenging.  Relax this test to allow world to be treated
+		# as a modify/delete conflict as well, meaning it will have
+		# two higher order stages, that just so happen to match.
+		#
+		test_stdout_line_count = 1 git ls-files -s hello &&
+		test_stdout_line_count = 2 git ls-files -s world &&
+		test_grep "CONFLICT (modify/delete).*world deleted in HEAD" out
+	)
+'
+
+# Testcase 12o, Directory rename hits other rename source; file still in way on same side
+#   Commit O:  A/file1_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              C/other
+#   Commit A:  A/file1_1
+#              A/stuff
+#              B/stuff
+#              C/file1_2
+#              C/other
+#   Commit B:  D/file2_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              A/other
+#   In words:
+#     A: rename B/file1_2 -> C/file1_2
+#     B: rename C/ -> A/
+#        rename A/file1_1 -> D/file2_1
+#   Rationale:
+#       A/stuff is unmodified, it shows up in final output
+#       B/stuff is unmodified, it shows up in final output
+#       C/other touched on one side (rename to A), so A/other shows up in output
+#       A/file1 is renamed to D/file2
+#       B/file1 -> C/file1 and even though C/ -> A/, A/file1 is
+#               "in the way" so we don't do the directory rename
+#   Expected:  A/stuff
+#              B/stuff
+#              A/other
+#              D/file2
+#              C/file1
+#              + CONFLICT (implicit dir rename): A/file1 in way of C/file1
+#
+
+test_setup_12o () {
+	git init 12o &&
+	(
+		cd 12o &&
+
+		mkdir -p A B C &&
+		echo 1 >A/file1 &&
+		echo 2 >B/file1 &&
+		echo other >C/other &&
+		echo Astuff >A/stuff &&
+		echo Bstuff >B/stuff &&
+		git add . &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git mv B/file1 C/ &&
+		git add . &&
+		git commit -m "A" &&
+
+		git switch B &&
+		mkdir -p D &&
+		git mv A/file1 D/file2 &&
+		git mv C/other A/other &&
+		git add . &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success '12o: Directory rename hits other rename source; file still in way on same side' '
+	test_setup_12o &&
+	(
+		cd 12o &&
+
+		git checkout -q A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+
+		test_stdout_line_count = 5 git ls-files -s &&
+		test_stdout_line_count = 1 git ls-files -s A/other &&
+		test_stdout_line_count = 1 git ls-files -s A/stuff &&
+		test_stdout_line_count = 1 git ls-files -s B/stuff &&
+		test_stdout_line_count = 1 git ls-files -s D/file2 &&
+
+		test_grep "CONFLICT (implicit dir rename).*Existing file/dir at A/file1 in the way" out &&
+		test_stdout_line_count = 1 git ls-files -s C/file1
+	)
+'
+
+# Testcase 12p, Directory rename hits other rename source; file still in way on other side
+#   Commit O:  A/file1_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              C/other
+#   Commit A:  D/file2_1
+#              A/stuff
+#              B/stuff
+#              C/file1_2
+#              C/other
+#   Commit B:  A/file1_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              A/other
+#   Short version:
+#     A: rename A/file1_1 -> D/file2_1
+#        rename B/file1_2 -> C/file1_2
+#     B: Rename C/ -> A/
+#   Rationale:
+#       A/stuff is unmodified, it shows up in final output
+#       B/stuff is unmodified, it shows up in final output
+#       C/other touched on one side (rename to A), so A/other shows up in output
+#       A/file1 is renamed to D/file2
+#       B/file1 -> C/file1 and even though C/ -> A/, A/file1 is
+#               "in the way" so we don't do the directory rename
+#   Expected:  A/stuff
+#              B/stuff
+#              A/other
+#              D/file2
+#              C/file1
+#              + CONFLICT (implicit dir rename): A/file1 in way of C/file1
+#
+
+test_setup_12p () {
+	git init 12p &&
+	(
+		cd 12p &&
+
+		mkdir -p A B C &&
+		echo 1 >A/file1 &&
+		echo 2 >B/file1 &&
+		echo other >C/other &&
+		echo Astuff >A/stuff &&
+		echo Bstuff >B/stuff &&
+		git add . &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		mkdir -p D &&
+		git mv A/file1 D/file2 &&
+		git mv B/file1 C/ &&
+		git add . &&
+		git commit -m "A" &&
+
+		git switch B &&
+		git mv C/other A/other &&
+		git add . &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success '12p: Directory rename hits other rename source; file still in way on other side' '
+	test_setup_12p &&
+	(
+		cd 12p &&
+
+		git checkout -q A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+
+		test_stdout_line_count = 5 git ls-files -s &&
+		test_stdout_line_count = 1 git ls-files -s A/other &&
+		test_stdout_line_count = 1 git ls-files -s A/stuff &&
+		test_stdout_line_count = 1 git ls-files -s B/stuff &&
+		test_stdout_line_count = 1 git ls-files -s D/file2 &&
+
+		test_grep "CONFLICT (implicit dir rename).*Existing file/dir at A/file1 in the way" out &&
+		test_stdout_line_count = 1 git ls-files -s C/file1
+	)
+'
+
+# Testcase 12q, Directory rename hits other rename source; file removed though
+#   Commit O:  A/file1_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              C/other
+#   Commit A:  A/stuff
+#              B/stuff
+#              C/file1_2
+#              C/other
+#   Commit B:  D/file2_1
+#              A/stuff
+#              B/file1_2
+#              B/stuff
+#              A/other
+#   In words:
+#     A: delete A/file1_1, rename B/file1_2 -> C/file1_2
+#     B: Rename C/ -> A/, rename A/file1_1 -> D/file2_1
+#   Rationale:
+#       A/stuff is unmodified, it shows up in final output
+#       B/stuff is unmodified, it shows up in final output
+#       C/other touched on one side (rename to A), so A/other shows up in output
+#       A/file1 is rename/delete to D/file2, so two stages for D/file2
+#       B/file1 -> C/file1 and even though C/ -> A/, A/file1 as a source was
+#               "in the way" (ish) so we don't do the directory rename
+#   Expected:  A/stuff
+#              B/stuff
+#              A/other
+#              D/file2 (two stages)
+#              C/file1
+#              + CONFLICT (implicit dir rename): A/file1 in way of C/file1
+#              + CONFLICT (rename/delete): D/file2
+#
+
+test_setup_12q () {
+	git init 12q &&
+	(
+		cd 12q &&
+
+		mkdir -p A B C &&
+		echo 1 >A/file1 &&
+		echo 2 >B/file1 &&
+		echo other >C/other &&
+		echo Astuff >A/stuff &&
+		echo Bstuff >B/stuff &&
+		git add . &&
+		git commit -m "O" &&
+
+		git branch O &&
+		git branch A &&
+		git branch B &&
+
+		git switch A &&
+		git rm A/file1 &&
+		git mv B/file1 C/ &&
+		git add . &&
+		git commit -m "A" &&
+
+		git switch B &&
+		mkdir -p D &&
+		git mv A/file1 D/file2 &&
+		git mv C/other A/other &&
+		git add . &&
+		git commit -m "B"
+	)
+}
+
+test_expect_success '12q: Directory rename hits other rename source; file removed though' '
+	test_setup_12q &&
+	(
+		cd 12q &&
+
+		git checkout -q A^0 &&
+
+		test_must_fail git -c merge.directoryRenames=conflict merge -s recursive B^0 >out &&
+
+		test_grep "CONFLICT (rename/delete).*A/file1.*D/file2" out &&
+		test_grep "CONFLICT (implicit dir rename).*Existing file/dir at A/file1 in the way" out &&
+
+		test_stdout_line_count = 6 git ls-files -s &&
+		test_stdout_line_count = 1 git ls-files -s A/other &&
+		test_stdout_line_count = 1 git ls-files -s A/stuff &&
+		test_stdout_line_count = 1 git ls-files -s B/stuff &&
+		test_stdout_line_count = 2 git ls-files -s D/file2 &&
+
+		# This is a slightly suboptimal resolution; allowing the
+		# rename of C/ -> A/ to affect C/file1 and further rename
+		# it to A/file1 would probably be preferable, but since
+		# A/file1 existed as the source of another rename, allowing
+		# the dir rename of C/file1 -> A/file1 would mean modifying
+		# the code so that renames do not adjust both their source
+		# and target paths in all cases.
+		test_grep ! "CONFLICT (file location)" out &&
+		test_stdout_line_count = 1 git ls-files -s C/file1
+	)
+'
+
 ###########################################################################
 # SECTION 13: Checking informational and conflict messages
 #
@@ -4913,7 +5626,7 @@ test_expect_merge_algorithm failure success '12f: Trivial directory resolve, cac
 #   Expected: y/{b,c,d,e/f}, with notices/conflicts for both y/d and y/e/f
 
 test_setup_13a () {
-	test_create_repo 13a_$1 &&
+	git init 13a_$1 &&
 	(
 		cd 13a_$1 &&
 
@@ -4952,12 +5665,12 @@ test_expect_success '13a(conflict): messages for newly added files' '
 
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep CONFLICT..file.location.*z/e/f.added.in.B^0.*y/e/f out &&
-		test_i18ngrep CONFLICT..file.location.*z/d.added.in.B^0.*y/d out &&
+		test_grep CONFLICT..file.location.*z/e/f.added.in.B^0.*y/e/f out &&
+		test_grep CONFLICT..file.location.*z/d.added.in.B^0.*y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/[de]" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/[de]" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d &&
@@ -4976,12 +5689,12 @@ test_expect_success '13a(info): messages for newly added files' '
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep Path.updated:.*z/e/f.added.in.B^0.*y/e/f out &&
-		test_i18ngrep Path.updated:.*z/d.added.in.B^0.*y/d out &&
+		test_grep Path.updated:.*z/e/f.added.in.B^0.*y/e/f out &&
+		test_grep Path.updated:.*z/d.added.in.B^0.*y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/[de]" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/[de]" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d &&
@@ -5000,7 +5713,7 @@ test_expect_success '13a(info): messages for newly added files' '
 #             one about content, and one about file location
 
 test_setup_13b () {
-	test_create_repo 13b_$1 &&
+	git init 13b_$1 &&
 	(
 		cd 13b_$1 &&
 
@@ -5042,12 +5755,12 @@ test_expect_success '13b(conflict): messages for transitive rename with conflict
 
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep CONFLICT.*content.*Merge.conflict.in.y/d out &&
-		test_i18ngrep CONFLICT..file.location.*x/d.renamed.to.z/d.*moved.to.y/d out &&
+		test_grep CONFLICT.*content.*Merge.conflict.in.y/d out &&
+		test_grep CONFLICT..file.location.*x/d.renamed.to.z/d.*moved.to.y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/d" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/d" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d
@@ -5064,12 +5777,12 @@ test_expect_success '13b(info): messages for transitive rename with conflicted c
 
 		test_must_fail git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep CONFLICT.*content.*Merge.conflict.in.y/d out &&
-		test_i18ngrep Path.updated:.*x/d.renamed.to.z/d.in.B^0.*moving.it.to.y/d out &&
+		test_grep CONFLICT.*content.*Merge.conflict.in.y/d out &&
+		test_grep Path.updated:.*x/d.renamed.to.z/d.in.B^0.*moving.it.to.y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/d" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/d" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d
@@ -5081,13 +5794,13 @@ test_expect_success '13b(info): messages for transitive rename with conflicted c
 #   Commit A: y/{b,c,d}, x/e
 #   Commit B: z/{b,c,d}, x/e
 #   Expected: y/{b,c,d}, x/e, with info or conflict messages for d
-#             A: renamed x/d -> z/d; B: renamed z/ -> y/ AND renamed x/d to y/d
-#             One could argue A had partial knowledge of what was done with
-#             d and B had full knowledge, but that's a slippery slope as
+#             B: renamed x/d -> z/d; A: renamed z/ -> y/ AND renamed x/d to y/d
+#             One could argue B had partial knowledge of what was done with
+#             d and A had full knowledge, but that's a slippery slope as
 #             shown in testcase 13d.
 
 test_setup_13c () {
-	test_create_repo 13c_$1 &&
+	git init 13c_$1 &&
 	(
 		cd 13c_$1 &&
 
@@ -5128,11 +5841,11 @@ test_expect_success '13c(conflict): messages for rename/rename(1to1) via transit
 
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep CONFLICT..file.location.*x/d.renamed.to.z/d.*moved.to.y/d out &&
+		test_grep CONFLICT..file.location.*x/d.renamed.to.z/d.*moved.to.y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/d" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/d" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d
@@ -5149,11 +5862,11 @@ test_expect_success '13c(info): messages for rename/rename(1to1) via transitive 
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep Path.updated:.*x/d.renamed.to.z/d.in.B^0.*moving.it.to.y/d out &&
+		test_grep Path.updated:.*x/d.renamed.to.z/d.in.B^0.*moving.it.to.y/d out &&
 
 		git ls-files >paths &&
-		! grep z/ paths &&
-		grep "y/d" paths &&
+		test_grep ! z/ paths &&
+		test_grep "y/d" paths &&
 
 		test_path_is_missing z/d &&
 		test_path_is_file    y/d
@@ -5175,7 +5888,7 @@ test_expect_success '13c(info): messages for rename/rename(1to1) via transitive 
 #               No conflict in where a/y ends up, so put it in d/y.
 
 test_setup_13d () {
-	test_create_repo 13d_$1 &&
+	git init 13d_$1 &&
 	(
 		cd 13d_$1 &&
 
@@ -5217,13 +5930,13 @@ test_expect_success '13d(conflict): messages for rename/rename(1to1) via dual tr
 
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep CONFLICT..file.location.*a/y.renamed.to.b/y.*moved.to.d/y out &&
-		test_i18ngrep CONFLICT..file.location.*a/y.renamed.to.c/y.*moved.to.d/y out &&
+		test_grep CONFLICT..file.location.*a/y.renamed.to.b/y.*moved.to.d/y out &&
+		test_grep CONFLICT..file.location.*a/y.renamed.to.c/y.*moved.to.d/y out &&
 
 		git ls-files >paths &&
-		! grep b/ paths &&
-		! grep c/ paths &&
-		grep "d/y" paths &&
+		test_grep ! b/ paths &&
+		test_grep ! c/ paths &&
+		test_grep "d/y" paths &&
 
 		test_path_is_missing b/y &&
 		test_path_is_missing c/y &&
@@ -5241,13 +5954,13 @@ test_expect_success '13d(info): messages for rename/rename(1to1) via dual transi
 
 		git -c merge.directoryRenames=true merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep Path.updated.*a/y.renamed.to.b/y.*moving.it.to.d/y out &&
-		test_i18ngrep Path.updated.*a/y.renamed.to.c/y.*moving.it.to.d/y out &&
+		test_grep Path.updated.*a/y.renamed.to.b/y.*moving.it.to.d/y out &&
+		test_grep Path.updated.*a/y.renamed.to.c/y.*moving.it.to.d/y out &&
 
 		git ls-files >paths &&
-		! grep b/ paths &&
-		! grep c/ paths &&
-		grep "d/y" paths &&
+		test_grep ! b/ paths &&
+		test_grep ! c/ paths &&
+		test_grep "d/y" paths &&
 
 		test_path_is_missing b/y &&
 		test_path_is_missing c/y &&
@@ -5301,7 +6014,7 @@ test_expect_success '13d(info): messages for rename/rename(1to1) via dual transi
 #          least avoids hitting a BUG().
 #
 test_setup_13e () {
-	test_create_repo 13e &&
+	git init 13e &&
 	(
 		cd 13e &&
 
@@ -5356,14 +6069,14 @@ test_expect_success '13e: directory rename detection in recursive case' '
 
 		git -c merge.directoryRenames=conflict merge -s recursive C^0 >out 2>err &&
 
-		test_i18ngrep ! CONFLICT out &&
-		test_i18ngrep ! BUG: err &&
-		test_i18ngrep ! core.dumped err &&
+		test_grep ! CONFLICT out &&
+		test_grep ! BUG: err &&
+		test_grep ! core.dumped err &&
 		test_must_be_empty err &&
 
 		git ls-files >paths &&
-		! grep a/x paths &&
-		grep b/x paths
+		test_grep ! a/x paths &&
+		test_grep b/x paths
 	)
 '
 

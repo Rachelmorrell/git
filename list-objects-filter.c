@@ -1,18 +1,18 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "dir.h"
-#include "tag.h"
+#include "gettext.h"
+#include "hex.h"
 #include "commit.h"
-#include "tree.h"
-#include "blob.h"
 #include "diff.h"
-#include "tree-walk.h"
 #include "revision.h"
-#include "list-objects.h"
 #include "list-objects-filter.h"
 #include "list-objects-filter-options.h"
 #include "oidmap.h"
 #include "oidset.h"
-#include "object-store.h"
+#include "object-name.h"
+#include "odb.h"
 
 /* Remember to update object flag allocation in object.h */
 /*
@@ -21,7 +21,7 @@
  * in the traversal (until we mark it SEEN).  This is a way to
  * let us silently de-dup calls to show() in the caller.  This
  * is subtly different from the "revision.h:SHOWN" and the
- * "sha1-name.c:ONELINE_SEEN" bits.  And also different from
+ * "object-name.c:ONELINE_SEEN" bits.  And also different from
  * the non-de-dup usage in pack-bitmap.c
  */
 #define FILTER_SHOWN_BUT_REVISIT (1<<21)
@@ -70,17 +70,27 @@ struct filter {
 };
 
 static enum list_objects_filter_result filter_blobs_none(
-	struct repository *r,
+	struct repository *r UNUSED,
 	enum list_objects_filter_situation filter_situation,
 	struct object *obj,
-	const char *pathname,
-	const char *filename,
+	const char *pathname UNUSED,
+	const char *filename UNUSED,
 	struct oidset *omits,
-	void *filter_data_)
+	void *filter_data_ UNUSED)
 {
 	switch (filter_situation) {
 	default:
 		BUG("unknown filter_situation: %d", filter_situation);
+
+	case LOFS_TAG:
+		assert(obj->type == OBJ_TAG);
+		/* always include all tag objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
+	case LOFS_COMMIT:
+		assert(obj->type == OBJ_COMMIT);
+		/* always include all commit objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
 
 	case LOFS_BEGIN_TREE:
 		assert(obj->type == OBJ_TREE);
@@ -102,7 +112,7 @@ static enum list_objects_filter_result filter_blobs_none(
 }
 
 static void filter_blobs_none__init(
-	struct list_objects_filter_options *filter_options,
+	struct list_objects_filter_options *filter_options UNUSED,
 	struct filter *filter)
 {
 	filter->filter_object_fn = filter_blobs_none;
@@ -149,11 +159,11 @@ static int filter_trees_update_omits(
 }
 
 static enum list_objects_filter_result filter_trees_depth(
-	struct repository *r,
+	struct repository *r UNUSED,
 	enum list_objects_filter_situation filter_situation,
 	struct object *obj,
-	const char *pathname,
-	const char *filename,
+	const char *pathname UNUSED,
+	const char *filename UNUSED,
 	struct oidset *omits,
 	void *filter_data_)
 {
@@ -173,6 +183,16 @@ static enum list_objects_filter_result filter_trees_depth(
 	default:
 		BUG("unknown filter_situation: %d", filter_situation);
 
+	case LOFS_TAG:
+		assert(obj->type == OBJ_TAG);
+		/* always include all tag objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
+	case LOFS_COMMIT:
+		assert(obj->type == OBJ_COMMIT);
+		/* always include all commit objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
 	case LOFS_END_TREE:
 		assert(obj->type == OBJ_TREE);
 		filter_data->current_depth--;
@@ -186,7 +206,7 @@ static enum list_objects_filter_result filter_trees_depth(
 		seen_info = oidmap_get(
 			&filter_data->seen_at_depth, &obj->oid);
 		if (!seen_info) {
-			seen_info = xcalloc(1, sizeof(*seen_info));
+			CALLOC_ARRAY(seen_info, 1);
 			oidcpy(&seen_info->base.oid, &obj->oid);
 			seen_info->depth = filter_data->current_depth;
 			oidmap_put(&filter_data->seen_at_depth, seen_info);
@@ -224,7 +244,7 @@ static void filter_trees_free(void *filter_data) {
 	struct filter_trees_depth_data *d = filter_data;
 	if (!d)
 		return;
-	oidmap_free(&d->seen_at_depth, 1);
+	oidmap_clear(&d->seen_at_depth, 1);
 	free(d);
 }
 
@@ -254,18 +274,28 @@ static enum list_objects_filter_result filter_blobs_limit(
 	struct repository *r,
 	enum list_objects_filter_situation filter_situation,
 	struct object *obj,
-	const char *pathname,
-	const char *filename,
+	const char *pathname UNUSED,
+	const char *filename UNUSED,
 	struct oidset *omits,
 	void *filter_data_)
 {
 	struct filter_blobs_limit_data *filter_data = filter_data_;
-	unsigned long object_length;
+	size_t object_length;
 	enum object_type t;
 
 	switch (filter_situation) {
 	default:
 		BUG("unknown filter_situation: %d", filter_situation);
+
+	case LOFS_TAG:
+		assert(obj->type == OBJ_TAG);
+		/* always include all tag objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
+	case LOFS_COMMIT:
+		assert(obj->type == OBJ_COMMIT);
+		/* always include all commit objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
 
 	case LOFS_BEGIN_TREE:
 		assert(obj->type == OBJ_TREE);
@@ -280,7 +310,7 @@ static enum list_objects_filter_result filter_blobs_limit(
 		assert(obj->type == OBJ_BLOB);
 		assert((obj->flags & SEEN) == 0);
 
-		t = oid_object_info(r, &obj->oid, &object_length);
+		t = odb_read_object_info(r->objects, &obj->oid, &object_length);
 		if (t != OBJ_BLOB) { /* probably OBJ_NONE */
 			/*
 			 * We DO NOT have the blob locally, so we cannot
@@ -370,6 +400,16 @@ static enum list_objects_filter_result filter_sparse(
 	switch (filter_situation) {
 	default:
 		BUG("unknown filter_situation: %d", filter_situation);
+
+	case LOFS_TAG:
+		assert(obj->type == OBJ_TAG);
+		/* always include all tag objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
+	case LOFS_COMMIT:
+		assert(obj->type == OBJ_COMMIT);
+		/* always include all commit objects */
+		return LOFR_MARK_SEEN | LOFR_DO_SHOW;
 
 	case LOFS_BEGIN_TREE:
 		assert(obj->type == OBJ_TREE);
@@ -474,6 +514,7 @@ static enum list_objects_filter_result filter_sparse(
 static void filter_sparse_free(void *filter_data)
 {
 	struct filter_sparse_data *d = filter_data;
+	clear_pattern_list(&d->pl);
 	free(d->array_frame);
 	free(d);
 }
@@ -483,12 +524,11 @@ static void filter_sparse_oid__init(
 	struct filter *filter)
 {
 	struct filter_sparse_data *d = xcalloc(1, sizeof(*d));
-	struct object_context oc;
 	struct object_id sparse_oid;
 
-	if (get_oid_with_context(the_repository,
-				 filter_options->sparse_oid_name,
-				 GET_OID_BLOB, &sparse_oid, &oc))
+	if (repo_get_oid_with_flags(the_repository,
+				    filter_options->sparse_oid_name,
+				    &sparse_oid, GET_OID_BLOB))
 		die(_("unable to access sparse blob in '%s'"),
 		    filter_options->sparse_oid_name);
 	if (add_patterns_from_blob_to_list(&sparse_oid, "", 0, &d->pl) < 0)
@@ -503,6 +543,81 @@ static void filter_sparse_oid__init(
 	filter->filter_data = d;
 	filter->filter_object_fn = filter_sparse;
 	filter->free_fn = filter_sparse_free;
+}
+
+/*
+ * A filter for list-objects to omit large blobs.
+ * And to OPTIONALLY collect a list of the omitted OIDs.
+ */
+struct filter_object_type_data {
+	enum object_type object_type;
+};
+
+static enum list_objects_filter_result filter_object_type(
+	struct repository *r UNUSED,
+	enum list_objects_filter_situation filter_situation,
+	struct object *obj,
+	const char *pathname UNUSED,
+	const char *filename UNUSED,
+	struct oidset *omits UNUSED,
+	void *filter_data_)
+{
+	struct filter_object_type_data *filter_data = filter_data_;
+
+	switch (filter_situation) {
+	default:
+		BUG("unknown filter_situation: %d", filter_situation);
+
+	case LOFS_TAG:
+		assert(obj->type == OBJ_TAG);
+		if (filter_data->object_type == OBJ_TAG)
+			return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+		return LOFR_MARK_SEEN;
+
+	case LOFS_COMMIT:
+		assert(obj->type == OBJ_COMMIT);
+		if (filter_data->object_type == OBJ_COMMIT)
+			return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+		return LOFR_MARK_SEEN;
+
+	case LOFS_BEGIN_TREE:
+		assert(obj->type == OBJ_TREE);
+
+		/*
+		 * If we only want to show commits or tags, then there is no
+		 * need to walk down trees.
+		 */
+		if (filter_data->object_type == OBJ_COMMIT ||
+		    filter_data->object_type == OBJ_TAG)
+			return LOFR_SKIP_TREE;
+
+		if (filter_data->object_type == OBJ_TREE)
+			return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+
+		return LOFR_MARK_SEEN;
+
+	case LOFS_BLOB:
+		assert(obj->type == OBJ_BLOB);
+
+		if (filter_data->object_type == OBJ_BLOB)
+			return LOFR_MARK_SEEN | LOFR_DO_SHOW;
+		return LOFR_MARK_SEEN;
+
+	case LOFS_END_TREE:
+		return LOFR_ZERO;
+	}
+}
+
+static void filter_object_type__init(
+	struct list_objects_filter_options *filter_options,
+	struct filter *filter)
+{
+	struct filter_object_type_data *d = xcalloc(1, sizeof(*d));
+	d->object_type = filter_options->object_type;
+
+	filter->filter_data = d;
+	filter->filter_object_fn = filter_object_type;
+	filter->free_fn = free;
 }
 
 /* A filter which only shows objects shown by all sub-filters. */
@@ -560,7 +675,7 @@ static enum list_objects_filter_result filter_combine(
 	struct object *obj,
 	const char *pathname,
 	const char *filename,
-	struct oidset *omits,
+	struct oidset *omits UNUSED,
 	void *filter_data)
 {
 	struct combine_filter_data *d = filter_data;
@@ -594,15 +709,7 @@ static void filter_combine__free(void *filter_data)
 			BUG("expected oidset to be cleared already");
 	}
 	free(d->sub);
-}
-
-static void add_all(struct oidset *dest, struct oidset *src) {
-	struct oidset_iter iter;
-	struct object_id *src_oid;
-
-	oidset_iter_init(src, &iter);
-	while ((src_oid = oidset_iter_next(&iter)) != NULL)
-		oidset_insert(dest, src_oid);
+	free(d);
 }
 
 static void filter_combine__finalize_omits(
@@ -613,7 +720,7 @@ static void filter_combine__finalize_omits(
 	size_t sub;
 
 	for (sub = 0; sub < d->nr; sub++) {
-		add_all(omits, &d->sub[sub].omits);
+		oidset_insert_from_set(omits, &d->sub[sub].omits);
 		oidset_clear(&d->sub[sub].omits);
 	}
 }
@@ -626,7 +733,7 @@ static void filter_combine__init(
 	size_t sub;
 
 	d->nr = filter_options->sub_nr;
-	d->sub = xcalloc(d->nr, sizeof(*d->sub));
+	CALLOC_ARRAY(d->sub, d->nr);
 	for (sub = 0; sub < d->nr; sub++)
 		d->sub[sub].filter = list_objects_filter__init(
 			filter->omits ? &d->sub[sub].omits : NULL,
@@ -636,6 +743,13 @@ static void filter_combine__init(
 	filter->filter_object_fn = filter_combine;
 	filter->free_fn = filter_combine__free;
 	filter->finalize_omits_fn = filter_combine__finalize_omits;
+}
+
+static void filter_auto__init(
+	struct list_objects_filter_options *filter_options UNUSED,
+	struct filter *filter UNUSED)
+{
+	BUG("LOFC_AUTO should have been resolved before initializing the filter");
 }
 
 typedef void (*filter_init_fn)(
@@ -651,7 +765,9 @@ static filter_init_fn s_filters[] = {
 	filter_blobs_limit__init,
 	filter_trees_depth__init,
 	filter_sparse_oid__init,
+	filter_object_type__init,
 	filter_combine__init,
+	filter_auto__init,
 };
 
 struct filter *list_objects_filter__init(
@@ -674,7 +790,7 @@ struct filter *list_objects_filter__init(
 	if (!init_fn)
 		return NULL;
 
-	filter = xcalloc(1, sizeof(*filter));
+	CALLOC_ARRAY(filter, 1);
 	filter->omits = omitted;
 	init_fn(filter_options, filter);
 	return filter;
@@ -711,4 +827,49 @@ void list_objects_filter__free(struct filter *filter)
 		filter->finalize_omits_fn(filter->omits, filter->filter_data);
 	filter->free_fn(filter->filter_data);
 	free(filter);
+}
+
+/*
+ * NEEDSWORK: this reimplements the blob:limit size check rather than
+ * reusing the existing filter machinery in
+ * list_objects_filter__filter_object(). That machinery is currently
+ * tied to the object-walk path and cannot easily be driven from a
+ * plain oidset. It would be nice to refactor the filter code so this
+ * helper can reuse it instead of duplicating the size check.
+ */
+int list_objects_filter__filter_oidset(struct repository *r,
+	const struct list_objects_filter_options *opts,
+	const struct oidset *in,
+	struct oidset *omitted)
+{
+	struct oidset_iter iter;
+	const struct object_id *oid;
+
+	if (opts->choice != LOFC_BLOB_LIMIT)
+		return error(_("filter_oidset: only blob:limit filters are supported"));
+
+	oidset_iter_init(in, &iter);
+	while ((oid = oidset_iter_next(&iter))) {
+		struct object_info info = OBJECT_INFO_INIT;
+		enum object_type type;
+		size_t size;
+
+		info.typep = &type;
+		info.sizep = &size;
+
+		/*
+		 * Use OBJECT_INFO_SKIP_FETCH_OBJECT to avoid triggering
+		 * a lazy fetch while inspecting candidates for removal.
+		 */
+		if (odb_read_object_info_extended(r->objects, oid, &info,
+				OBJECT_INFO_SKIP_FETCH_OBJECT) < 0)
+			continue;
+
+		if (type != OBJ_BLOB)
+			continue;
+
+		if (size >= opts->blob_limit_value)
+			oidset_insert(omitted, oid);
+	}
+	return 0;
 }

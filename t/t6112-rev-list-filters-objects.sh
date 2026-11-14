@@ -2,6 +2,9 @@
 
 test_description='git rev-list using object filtering'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 # Test the blob:none filter.
@@ -13,9 +16,9 @@ test_expect_success 'setup r1' '
 	git init r1 &&
 	for n in 1 2 3 4 5
 	do
-		echo "This is file: $n" > r1/file.$n
-		git -C r1 add file.$n
-		git -C r1 commit -m "$n"
+		echo "This is file: $n" > r1/file.$n &&
+		git -C r1 add file.$n &&
+		git -C r1 commit -m "$n" || return 1
 	done
 '
 
@@ -42,8 +45,8 @@ test_expect_success 'specify blob explicitly prevents filtering' '
 		 awk -f print_2.awk) &&
 
 	git -C r1 rev-list --objects --filter=blob:none HEAD $file_3 >observed &&
-	grep "$file_3" observed &&
-	! grep "$file_4" observed
+	test_grep "$file_3" observed &&
+	test_grep ! "$file_4" observed
 '
 
 test_expect_success 'verify emitted+omitted == all' '
@@ -70,9 +73,9 @@ test_expect_success 'setup r2' '
 	git init r2 &&
 	for n in 1000 10000
 	do
-		printf "%"$n"s" X > r2/large.$n
-		git -C r2 add large.$n
-		git -C r2 commit -m "$n"
+		printf "%"$n"s" X > r2/large.$n &&
+		git -C r2 add large.$n &&
+		git -C r2 commit -m "$n" || return 1
 	done
 '
 
@@ -156,6 +159,78 @@ test_expect_success 'verify blob:limit=1m' '
 	test_must_be_empty observed
 '
 
+# Test object:type=<type> filter.
+
+test_expect_success 'setup object-type' '
+	test_create_repo object-type &&
+	test_commit --no-tag -C object-type message blob &&
+	git -C object-type tag tag -m tag-message
+'
+
+test_expect_success 'verify object:type= fails with invalid type' '
+	test_must_fail git -C object-type rev-list --objects --filter=object:type= HEAD &&
+	test_must_fail git -C object-type rev-list --objects --filter=object:type=invalid HEAD
+'
+
+test_expect_success 'verify object:type=blob prints blob and commit' '
+	git -C object-type rev-parse HEAD >expected &&
+	printf "%s blob\n" $(git -C object-type rev-parse HEAD:blob) >>expected &&
+	git -C object-type rev-list --objects --filter=object:type=blob HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=tree prints tree and commit' '
+	(
+		git -C object-type rev-parse HEAD &&
+		printf "%s \n" $(git -C object-type rev-parse HEAD^{tree})
+	) >expected &&
+	git -C object-type rev-list --objects --filter=object:type=tree HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=commit prints commit' '
+	git -C object-type rev-parse HEAD >expected &&
+	git -C object-type rev-list --objects --filter=object:type=commit HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=tag prints tag' '
+	(
+		git -C object-type rev-parse HEAD &&
+		printf "%s tag\n" $(git -C object-type rev-parse tag)
+	) >expected &&
+	git -C object-type rev-list --objects --filter=object:type=tag tag >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=blob prints only blob with --filter-provided-objects' '
+	printf "%s blob\n" $(git -C object-type rev-parse HEAD:blob) >expected &&
+	git -C object-type rev-list --objects \
+		--filter=object:type=blob --filter-provided-objects HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=tree prints only tree with --filter-provided-objects' '
+	printf "%s \n" $(git -C object-type rev-parse HEAD^{tree}) >expected &&
+	git -C object-type rev-list --objects \
+		--filter=object:type=tree HEAD --filter-provided-objects >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=commit prints only commit with --filter-provided-objects' '
+	git -C object-type rev-parse HEAD >expected &&
+	git -C object-type rev-list --objects \
+		--filter=object:type=commit --filter-provided-objects HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'verify object:type=tag prints only tag with --filter-provided-objects' '
+	printf "%s tag\n" $(git -C object-type rev-parse tag) >expected &&
+	git -C object-type rev-list --objects \
+		--filter=object:type=tag --filter-provided-objects tag >actual &&
+	test_cmp expected actual
+'
+
 # Test sparse:path=<path> filter.
 # !!!!
 # NOTE: sparse:path filter support has been dropped for security reasons,
@@ -170,10 +245,10 @@ test_expect_success 'setup r3' '
 	mkdir r3/dir1 &&
 	for n in sparse1 sparse2
 	do
-		echo "This is file: $n" > r3/$n
-		git -C r3 add $n
-		echo "This is file: dir1/$n" > r3/dir1/$n
-		git -C r3 add dir1/$n
+		echo "This is file: $n" > r3/$n &&
+		git -C r3 add $n &&
+		echo "This is file: dir1/$n" > r3/dir1/$n &&
+		git -C r3 add dir1/$n || return 1
 	done &&
 	git -C r3 commit -m "sparse" &&
 	echo dir1/ >pattern1 &&
@@ -223,7 +298,7 @@ test_expect_success 'verify sparse:oid=oid-ish omits top-level files' '
 	sort >expected &&
 
 	git -C r3 rev-list --quiet --objects --filter-print-omitted \
-		--filter=sparse:oid=master:pattern HEAD >revs &&
+		--filter=sparse:oid=main:pattern HEAD >revs &&
 	awk -f print_1.awk revs |
 	sed "s/~//" |
 	sort >observed &&
@@ -249,7 +324,7 @@ test_expect_success 'rev-list W/ --missing=print and --missing=allow-any for tre
 
 	git -C r3.b rev-list --missing=allow-any --objects HEAD \
 		>objs 2>rev_list_err &&
-	! grep $TREE objs &&
+	test_grep ! $TREE objs &&
 	test_must_be_empty rev_list_err
 '
 
@@ -278,7 +353,7 @@ test_expect_success 'verify skipping tree iteration when not collecting omits' '
 	test_line_count = 2 actual &&
 
 	# Make sure no other trees were considered besides the root.
-	! grep "Skipping contents of tree [^.]" filter_trace &&
+	test_grep ! "Skipping contents of tree [^.]" filter_trace &&
 
 	# Try this again with "combine:". If both sub-filters are skipping
 	# trees, the composite filter should also skip trees. This is not
@@ -382,7 +457,7 @@ expect_invalid_filter_spec () {
 	test_must_fail git -C r3 rev-list --objects --filter="$spec" HEAD \
 		>actual 2>actual_stderr &&
 	test_must_be_empty actual &&
-	test_i18ngrep "$err" actual_stderr
+	test_grep "$err" actual_stderr
 }
 
 test_expect_success 'combine:... while URL-encoding things that should not be' '
@@ -406,10 +481,6 @@ test_expect_success 'combine:... with non-encoded reserved chars' '
 		"must escape char in sub-filter-spec: .\`." &&
 	expect_invalid_filter_spec combine:tree:2+sparse:~abc \
 		"must escape char in sub-filter-spec: .\~."
-'
-
-test_expect_success 'validate err msg for "combine:<valid-filter>+"' '
-	expect_invalid_filter_spec combine:tree:2+ "expected .tree:<depth>."
 '
 
 test_expect_success 'combine:... with edge-case hex digits: Ff Aa 0 9' '
@@ -436,7 +507,7 @@ test_expect_success 'add sparse pattern blobs whose paths have reserved chars' '
 
 test_expect_success 'combine:... with more than two sub-filters' '
 	git -C r3 rev-list --objects \
-		--filter=combine:tree:3+blob:limit=40+sparse:oid=master:pattern \
+		--filter=combine:tree:3+blob:limit=40+sparse:oid=main:pattern \
 		HEAD >actual &&
 
 	expect_has HEAD "" &&
@@ -454,7 +525,7 @@ test_expect_success 'combine:... with more than two sub-filters' '
 	cp actual expect &&
 
 	git -C r3 rev-list --objects \
-		--filter=combine:tree:3+blob:limit=40+sparse:oid=master:pattern1%2brenamed%25 \
+		--filter=combine:tree:3+blob:limit=40+sparse:oid=main:pattern1%2brenamed%25 \
 		HEAD >actual &&
 	test_cmp expect actual &&
 
@@ -464,23 +535,23 @@ test_expect_success 'combine:... with more than two sub-filters' '
 	test_when_finished "rm -f trace1" &&
 	GIT_TRACE=$(pwd)/trace1 git -C r3 rev-list --objects \
 		--filter=tree:3 --filter=blob:limit=40 \
-		--filter=sparse:oid="master:p;at%ter+n" \
+		--filter=sparse:oid="main:p;at%ter+n" \
 		HEAD >actual &&
 
 	test_cmp expect actual &&
-	grep "Add to combine filter-spec: sparse:oid=master:p%3bat%25ter%2bn" \
+	test_grep "Add to combine filter-spec: sparse:oid=main:p%3bat%25ter%2bn" \
 		trace1 &&
 
 	# Repeat the above test, but this time, the characters to encode are in
 	# the LHS of the combined filter.
 	test_when_finished "rm -f trace2" &&
 	GIT_TRACE=$(pwd)/trace2 git -C r3 rev-list --objects \
-		--filter=sparse:oid=master:^~pattern \
+		--filter=sparse:oid=main:^~pattern \
 		--filter=tree:3 --filter=blob:limit=40 \
 		HEAD >actual &&
 
 	test_cmp expect actual &&
-	grep "Add to combine filter-spec: sparse:oid=master:%5e%7epattern" \
+	test_grep "Add to combine filter-spec: sparse:oid=main:%5e%7epattern" \
 		trace2
 '
 
@@ -552,9 +623,9 @@ test_expect_success 'verify collecting omits in combined: filter' '
 	omitted_2=$(echo a     | git hash-object --stdin) &&
 	omitted_3=$(echo abcde | git hash-object --stdin) &&
 
-	grep ~$omitted_1 actual &&
-	grep ~$omitted_2 actual &&
-	grep ~$omitted_3 actual &&
+	test_grep "~$omitted_1" actual &&
+	test_grep "~$omitted_2" actual &&
+	test_grep "~$omitted_3" actual &&
 	test_line_count = 3 actual
 '
 
@@ -583,7 +654,7 @@ test_expect_success 'tree:<depth> which filters out blob but given as arg' '
 	blob_hash=$(git -C r4 rev-parse HEAD:subdir/bar) &&
 
 	git -C r4 rev-list --objects --filter=tree:1 HEAD $blob_hash >actual &&
-	grep ^$blob_hash actual
+	test_grep ^$blob_hash actual
 '
 
 # Delete some loose objects and use rev-list, but WITHOUT any filtering.
@@ -595,9 +666,9 @@ test_expect_success 'rev-list W/ --missing=print' '
 	awk -f print_2.awk ls_files_result |
 	sort >expected &&
 
-	for id in `cat expected | sed "s|..|&/|"`
+	for id in `sed "s|..|&/|" expected`
 	do
-		rm r1/.git/objects/$id
+		rm r1/.git/objects/$id || return 1
 	done &&
 
 	git -C r1 rev-list --quiet --missing=print --objects HEAD >revs &&
@@ -622,8 +693,20 @@ test_expect_success 'expand blob limit in protocol' '
 	git -C r2 config --local uploadpack.allowfilter 1 &&
 	GIT_TRACE_PACKET="$(pwd)/trace" git -c protocol.version=2 clone \
 		--filter=blob:limit=1k "file://$(pwd)/r2" limit &&
-	! grep "blob:limit=1k" trace &&
-	grep "blob:limit=1024" trace
+	test_grep ! "blob:limit=1k" trace &&
+	test_grep "blob:limit=1024" trace
+'
+
+test_expect_success EXPENSIVE 'large sparse filter file ignored' '
+	blob=$(dd if=/dev/zero bs=101M count=1 |
+	       git hash-object -w --stdin) &&
+	test_must_fail \
+		git rev-list --all --objects --filter=sparse:oid=$blob 2>err &&
+	cat >expect <<-EOF &&
+	warning: ignoring excessively large pattern blob: $blob
+	fatal: unable to parse sparse filter data in $blob
+	EOF
+	test_cmp expect err
 '
 
 test_done

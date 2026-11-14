@@ -1,30 +1,104 @@
-/*
- * not really _using_ the compat macros, just make sure the_index
- * declaration matches the definition in this file.
- */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "repository.h"
-#include "object-store.h"
+#include "hook.h"
+#include "odb.h"
+#include "odb/source.h"
 #include "config.h"
+#include "gettext.h"
 #include "object.h"
 #include "lockfile.h"
+#include "path.h"
+#include "read-cache-ll.h"
+#include "remote.h"
+#include "setup.h"
+#include "loose.h"
 #include "submodule-config.h"
+#include "sparse-index.h"
+#include "trace2.h"
+#include "promisor-remote.h"
+#include "refs.h"
+
+/*
+ * We do not define `USE_THE_REPOSITORY_VARIABLE` in this file because we do
+ * not want to rely on functions that implicitly use `the_repository`. This
+ * means that the `extern` declaration of `the_repository` isn't visible here,
+ * which makes sparse unhappy. We thus declare it here.
+ */
+extern struct repository *the_repository;
 
 /* The main repository */
 static struct repository the_repo;
-struct repository *the_repository;
-struct index_state the_index;
+struct repository *the_repository = &the_repo;
 
-void initialize_the_repository(void)
+/*
+ * An escape hatch: if we hit a bug in the production code that fails
+ * to set an appropriate hash algorithm (most likely to happen when
+ * running outside a repository), we can tell the user who reported
+ * the crash to set the environment variable to "sha1" (all lowercase)
+ * to revert to the historical behaviour of defaulting to SHA-1.
+ */
+static void set_default_hash_algo(struct repository *repo)
 {
-	the_repository = &the_repo;
+	const char *hash_name;
+	uint32_t algo;
 
-	the_repo.index = &the_index;
-	the_repo.objects = raw_object_store_new();
-	the_repo.parsed_objects = parsed_object_pool_new();
+	hash_name = getenv("GIT_TEST_DEFAULT_HASH_ALGO");
+	if (!hash_name)
+		return;
+	algo = hash_algo_by_name(hash_name);
+	if (algo == GIT_HASH_UNKNOWN)
+		return;
 
-	repo_set_hash_algo(&the_repo, GIT_HASH_SHA1);
+	repo_set_hash_algo(repo, algo);
+}
+
+struct repo_config_values *repo_config_values(struct repository *repo)
+{
+	if (repo != the_repository)
+		BUG("trying to read config from wrong repository instance");
+	if (!repo->initialized)
+		BUG("config values from uninitialized repository");
+	return &repo->config_values_private_;
+}
+
+void initialize_repository(struct repository *repo)
+{
+	if (repo->initialized)
+		BUG("repository initialized already");
+	repo->initialized = true;
+
+	repo->remote_state = remote_state_new();
+	repo->parsed_objects = parsed_object_pool_new(repo);
+	ALLOC_ARRAY(repo->index, 1);
+	index_state_init(repo->index, repo);
+	repo->check_deprecated_config = true;
+	repo->bare_cfg = -1;
+	repo->fetch_if_missing = 1;
+	repo_config_values_init(&repo->config_values_private_);
+	repo->rerere_cache_enabled = -1;
+
+	/*
+	 * When a command runs inside a repository, it learns what
+	 * hash algorithm is in use from the repository, but some
+	 * commands are designed to work outside a repository, yet
+	 * they want to access the_hash_algo, if only for the length
+	 * of the hashed value to see if their input looks like a
+	 * plausible hash value.
+	 *
+	 * We are in the process of identifying such code paths and
+	 * giving them an appropriate default individually; any
+	 * unconverted code paths that try to access the_hash_algo
+	 * will thus fail.  The end-users however have an escape hatch
+	 * to set GIT_TEST_DEFAULT_HASH_ALGO environment variable to
+	 * "sha1" to get back the old behaviour of defaulting to SHA-1.
+	 *
+	 * This escape hatch is deliberately kept unadvertised, so
+	 * that they see crashes and we can get a report before
+	 * telling them about it.
+	 */
+	if (repo == the_repository)
+		set_default_hash_algo(repo);
 }
 
 static void expand_base_dir(char **out, const char *in,
@@ -35,6 +109,46 @@ static void expand_base_dir(char **out, const char *in,
 		*out = xstrdup(in);
 	else
 		*out = xstrfmt("%s/%s", base_dir, def_in);
+}
+
+const char *repo_get_git_dir(struct repository *repo)
+{
+	if (!repo->gitdir)
+		BUG("repository hasn't been set up");
+	return repo->gitdir;
+}
+
+const char *repo_get_common_dir(struct repository *repo)
+{
+	if (!repo->commondir)
+		BUG("repository hasn't been set up");
+	return repo->commondir;
+}
+
+const char *repo_get_object_directory(struct repository *repo)
+{
+	if (!repo->objects->source)
+		BUG("repository hasn't been set up");
+	return repo->objects->source->path;
+}
+
+const char *repo_get_index_file(struct repository *repo)
+{
+	if (!repo->index_file)
+		BUG("repository hasn't been set up");
+	return repo->index_file;
+}
+
+const char *repo_get_graft_file(struct repository *repo)
+{
+	if (!repo->graft_file)
+		BUG("repository hasn't been set up");
+	return repo->graft_file;
+}
+
+const char *repo_get_work_tree(struct repository *repo)
+{
+	return repo->worktree;
 }
 
 static void repo_set_commondir(struct repository *repo,
@@ -70,25 +184,47 @@ void repo_set_gitdir(struct repository *repo,
 	free(old_gitdir);
 
 	repo_set_commondir(repo, o->commondir);
+	repo->disable_ref_updates = o->disable_ref_updates;
 
-	if (!repo->objects->odb) {
-		repo->objects->odb = xcalloc(1, sizeof(*repo->objects->odb));
-		repo->objects->odb_tail = &repo->objects->odb->next;
-	}
-	expand_base_dir(&repo->objects->odb->path, o->object_dir,
-			repo->commondir, "objects");
-
-	free(repo->objects->alternate_db);
-	repo->objects->alternate_db = xstrdup_or_null(o->alternate_db);
 	expand_base_dir(&repo->graft_file, o->graft_file,
 			repo->commondir, "info/grafts");
 	expand_base_dir(&repo->index_file, o->index_file,
 			repo->gitdir, "index");
 }
 
-void repo_set_hash_algo(struct repository *repo, int hash_algo)
+void repo_set_hash_algo(struct repository *repo, uint32_t hash_algo)
 {
 	repo->hash_algo = &hash_algos[hash_algo];
+}
+
+void repo_set_compat_hash_algo(struct repository *repo MAYBE_UNUSED, uint32_t algo)
+{
+#ifdef WITH_RUST
+	if (hash_algo_by_ptr(repo->hash_algo) == algo)
+		BUG("hash_algo and compat_hash_algo match");
+	repo->compat_hash_algo = algo ? &hash_algos[algo] : NULL;
+#else
+	if (algo)
+		die(_("compatibility hash algorithm support requires Rust"));
+#endif
+}
+
+void repo_set_ref_storage_format(struct repository *repo,
+				 enum ref_storage_format format,
+				 const char *payload)
+{
+	repo->ref_storage_format = format;
+	free(repo->ref_storage_payload);
+	repo->ref_storage_payload = xstrdup_or_null(payload);
+}
+
+void repo_set_object_storage_format(struct repository *repo,
+				    enum object_storage_format format,
+				    const char *payload)
+{
+	repo->object_storage_format = format;
+	free(repo->object_storage_payload);
+	repo->object_storage_payload = xstrdup_or_null(payload);
 }
 
 /*
@@ -130,8 +266,8 @@ void repo_set_worktree(struct repository *repo, const char *path)
 	trace2_def_repo(repo);
 }
 
-static int read_and_verify_repository_format(struct repository_format *format,
-					     const char *commondir)
+static int read_repository_format_from_commondir(struct repository_format *format,
+						 const char *commondir)
 {
 	int ret = 0;
 	struct strbuf sb = STRBUF_INIT;
@@ -139,11 +275,6 @@ static int read_and_verify_repository_format(struct repository_format *format,
 	strbuf_addf(&sb, "%s/config", commondir);
 	read_repository_format(format, sb.buf);
 	strbuf_reset(&sb);
-
-	if (verify_repository_format(format, &sb) < 0) {
-		warning("%s", sb.buf);
-		ret = -1;
-	}
 
 	strbuf_release(&sb);
 	return ret;
@@ -158,45 +289,49 @@ int repo_init(struct repository *repo,
 	      const char *worktree)
 {
 	struct repository_format format = REPOSITORY_FORMAT_INIT;
+	struct strbuf err = STRBUF_INIT;
+
 	memset(repo, 0, sizeof(*repo));
 
-	repo->objects = raw_object_store_new();
-	repo->parsed_objects = parsed_object_pool_new();
+	initialize_repository(repo);
 
 	if (repo_init_gitdir(repo, gitdir))
 		goto error;
 
-	if (read_and_verify_repository_format(&format, repo->commondir))
+	if (read_repository_format_from_commondir(&format, repo->commondir))
 		goto error;
 
-	repo_set_hash_algo(repo, format.hash_algo);
+	if (apply_repository_format(repo, &format, 0, &err) < 0) {
+		warning("%s", err.buf);
+		goto error;
+	}
+	repo->objects = odb_new(repo, 0);
 
 	if (worktree)
 		repo_set_worktree(repo, worktree);
 
 	clear_repository_format(&format);
+	strbuf_release(&err);
 	return 0;
 
 error:
+	clear_repository_format(&format);
+	strbuf_release(&err);
 	repo_clear(repo);
 	return -1;
 }
 
 int repo_submodule_init(struct repository *subrepo,
 			struct repository *superproject,
-			const struct submodule *sub)
+			const char *path,
+			const struct object_id *treeish_name)
 {
 	struct strbuf gitdir = STRBUF_INIT;
 	struct strbuf worktree = STRBUF_INIT;
 	int ret = 0;
 
-	if (!sub) {
-		ret = -1;
-		goto out;
-	}
-
-	strbuf_repo_worktree_path(&gitdir, superproject, "%s/.git", sub->path);
-	strbuf_repo_worktree_path(&worktree, superproject, "%s", sub->path);
+	repo_worktree_path_append(superproject, &gitdir, "%s/.git", path);
+	repo_worktree_path_append(superproject, &worktree, "%s", path);
 
 	if (repo_init(subrepo, gitdir.buf, worktree.buf)) {
 		/*
@@ -206,9 +341,15 @@ int repo_submodule_init(struct repository *subrepo,
 		 * in the superproject's 'modules' directory.  In this case the
 		 * submodule would not have a worktree.
 		 */
+		const struct submodule *sub =
+			submodule_from_path(superproject, treeish_name, path);
+		if (!sub) {
+			ret = -1;
+			goto out;
+		}
+
 		strbuf_reset(&gitdir);
-		strbuf_repo_git_path(&gitdir, superproject,
-				     "modules/%s", sub->name);
+		submodule_name_to_gitdir(&gitdir, superproject, sub->name);
 
 		if (repo_init(subrepo, gitdir.buf, NULL)) {
 			ret = -1;
@@ -219,7 +360,7 @@ int repo_submodule_init(struct repository *subrepo,
 	subrepo->submodule_prefix = xstrfmt("%s%s/",
 					    superproject->submodule_prefix ?
 					    superproject->submodule_prefix :
-					    "", sub->path);
+					    "", path);
 
 out:
 	strbuf_release(&gitdir);
@@ -227,44 +368,116 @@ out:
 	return ret;
 }
 
+static void repo_clear_path_cache(struct repo_path_cache *cache)
+{
+	FREE_AND_NULL(cache->squash_msg);
+	FREE_AND_NULL(cache->merge_msg);
+	FREE_AND_NULL(cache->merge_rr);
+	FREE_AND_NULL(cache->merge_mode);
+	FREE_AND_NULL(cache->merge_head);
+	FREE_AND_NULL(cache->fetch_head);
+	FREE_AND_NULL(cache->shallow);
+	FREE_AND_NULL(cache->merge_labels);
+}
+
 void repo_clear(struct repository *repo)
 {
-	FREE_AND_NULL(repo->gitdir);
-	FREE_AND_NULL(repo->commondir);
-	FREE_AND_NULL(repo->graft_file);
-	FREE_AND_NULL(repo->index_file);
-	FREE_AND_NULL(repo->worktree);
-	FREE_AND_NULL(repo->submodule_prefix);
+	struct hashmap_iter iter;
+	struct strmap_entry *e;
 
-	raw_object_store_clear(repo->objects);
-	FREE_AND_NULL(repo->objects);
+	free(repo->gitdir);
+	free(repo->commondir);
+	free(repo->prefix);
+	free(repo->graft_file);
+	free(repo->index_file);
+	free(repo->worktree);
+	free(repo->submodule_prefix);
+	free(repo->ref_storage_payload);
+	free(repo->object_storage_payload);
 
-	parsed_object_pool_clear(repo->parsed_objects);
-	FREE_AND_NULL(repo->parsed_objects);
+	odb_free(repo->objects);
+
+	if (repo->parsed_objects)
+		parsed_object_pool_clear(repo->parsed_objects);
+	free(repo->parsed_objects);
+
+	repo_settings_clear(repo);
+	repo_config_values_clear(&repo->config_values_private_);
 
 	if (repo->config) {
 		git_configset_clear(repo->config);
-		FREE_AND_NULL(repo->config);
+		free(repo->config);
 	}
 
-	if (repo->submodule_cache) {
+	if (repo->submodule_cache)
 		submodule_cache_free(repo->submodule_cache);
-		repo->submodule_cache = NULL;
-	}
 
 	if (repo->index) {
 		discard_index(repo->index);
-		if (repo->index != &the_index)
-			FREE_AND_NULL(repo->index);
+		free(repo->index);
 	}
+
+	if (repo->hook_config_cache) {
+		hook_cache_clear(repo->hook_config_cache);
+		free(repo->hook_config_cache);
+	}
+	strmap_clear(&repo->event_jobs, 0); /* values are uintptr_t, not heap ptrs */
+	string_list_clear(&repo->disabled_events, 0);
+
+	if (repo->promisor_remote_config) {
+		promisor_remote_clear(repo->promisor_remote_config);
+		free(repo->promisor_remote_config);
+	}
+
+	if (repo->remote_state) {
+		remote_state_clear(repo->remote_state);
+		free(repo->remote_state);
+	}
+
+	if (repo->refs_private) {
+		ref_store_release(repo->refs_private);
+		free(repo->refs_private);
+	}
+
+	strmap_for_each_entry(&repo->submodule_ref_stores, &iter, e)
+		ref_store_release(e->value);
+	strmap_clear(&repo->submodule_ref_stores, 1);
+
+	strmap_for_each_entry(&repo->worktree_ref_stores, &iter, e)
+		ref_store_release(e->value);
+	strmap_clear(&repo->worktree_ref_stores, 1);
+
+	repo_clear_path_cache(&repo->cached_paths);
+
+	memset(repo, 0, sizeof(*repo));
 }
 
 int repo_read_index(struct repository *repo)
 {
-	if (!repo->index)
-		repo->index = xcalloc(1, sizeof(*repo->index));
+	int res;
 
-	return read_index_from(repo->index, repo->index_file, repo->gitdir);
+	/* Complete the double-reference */
+	if (!repo->index) {
+		ALLOC_ARRAY(repo->index, 1);
+		index_state_init(repo->index, repo);
+	} else if (repo->index->repo != repo) {
+		BUG("repo's index should point back at itself");
+	}
+
+	res = read_index_from(repo->index, repo->index_file, repo->gitdir);
+
+	prepare_repo_settings(repo);
+	if (repo->settings.command_requires_full_index)
+		ensure_full_index(repo->index);
+
+	/*
+	 * If sparse checkouts are in use, check whether paths with the
+	 * SKIP_WORKTREE attribute are missing from the worktree; if not,
+	 * clear that attribute for that path.
+	 */
+	clear_skip_worktree_from_present_files(repo->index);
+
+	return res;
 }
 
 int repo_hold_locked_index(struct repository *repo,
@@ -273,5 +486,5 @@ int repo_hold_locked_index(struct repository *repo,
 {
 	if (!repo->index_file)
 		BUG("the repo hasn't been setup");
-	return hold_lock_file_for_update(lf, repo->index_file, flags);
+	return repo_hold_lock_file_for_update(repo, lf, repo->index_file, flags);
 }

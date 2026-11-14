@@ -1,24 +1,25 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "noop.h"
-#include "../commit.h"
 #include "../fetch-negotiator.h"
 
-static void known_common(struct fetch_negotiator *n, struct commit *c)
+static void known_common(struct fetch_negotiator *n UNUSED,
+			 struct commit *c UNUSED)
 {
 	/* do nothing */
 }
 
-static void add_tip(struct fetch_negotiator *n, struct commit *c)
+static void add_tip(struct fetch_negotiator *n UNUSED,
+		    struct commit *c UNUSED)
 {
 	/* do nothing */
 }
 
-static const struct object_id *next(struct fetch_negotiator *n)
+static const struct object_id *next(struct fetch_negotiator *n UNUSED)
 {
 	return NULL;
 }
 
-static int ack(struct fetch_negotiator *n, struct commit *c)
+static int ack(struct fetch_negotiator *n UNUSED, struct commit *c UNUSED)
 {
 	/*
 	 * This negotiator does not emit any commits, so there is no commit to
@@ -28,7 +29,13 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 	return 0;
 }
 
-static void release(struct fetch_negotiator *n)
+static void have_sent(struct fetch_negotiator *n UNUSED,
+		      struct commit *c UNUSED)
+{
+	/* nothing to do */
+}
+
+static void release(struct fetch_negotiator *n UNUSED)
 {
 	/* nothing to release */
 }
@@ -39,6 +46,7 @@ void noop_negotiator_init(struct fetch_negotiator *negotiator)
 	negotiator->add_tip = add_tip;
 	negotiator->next = next;
 	negotiator->ack = ack;
+	negotiator->have_sent = have_sent;
 	negotiator->release = release;
 	negotiator->data = NULL;
 }

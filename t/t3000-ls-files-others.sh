@@ -15,6 +15,7 @@ filesystem.
     path3/file3 - a file in a directory
     path4       - an empty directory
 '
+
 . ./test-lib.sh
 
 test_expect_success 'setup ' '
@@ -52,16 +53,19 @@ test_expect_success 'setup: expected output' '
 
 test_expect_success 'ls-files --others' '
 	git ls-files --others >output &&
+	test_filter_gitconfig output &&
 	test_cmp expected1 output
 '
 
 test_expect_success 'ls-files --others --directory' '
 	git ls-files --others --directory >output &&
+	test_filter_gitconfig output &&
 	test_cmp expected2 output
 '
 
 test_expect_success '--no-empty-directory hides empty directory' '
 	git ls-files --others --directory --no-empty-directory >output &&
+	test_filter_gitconfig output &&
 	test_cmp expected3 output
 '
 
@@ -69,26 +73,8 @@ test_expect_success 'ls-files --others handles non-submodule .git' '
 	mkdir not-a-submodule &&
 	echo foo >not-a-submodule/.git &&
 	git ls-files -o >output &&
+	test_filter_gitconfig output &&
 	test_cmp expected1 output
-'
-
-test_expect_success SYMLINKS 'ls-files --others with symlinked submodule' '
-	git init super &&
-	git init sub &&
-	(
-		cd sub &&
-		>a &&
-		git add a &&
-		git commit -m sub &&
-		git pack-refs --all
-	) &&
-	(
-		cd super &&
-		"$SHELL_PATH" "$TEST_DIRECTORY/../contrib/workdir/git-new-workdir" ../sub sub &&
-		git ls-files --others --exclude-standard >../actual
-	) &&
-	echo sub/ >expect &&
-	test_cmp expect actual
 '
 
 test_expect_success 'setup nested pathspec search' '

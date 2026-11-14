@@ -2,6 +2,7 @@
 #define CONNECTED_H
 
 struct object_id;
+struct repository;
 struct transport;
 
 /*
@@ -9,7 +10,7 @@ struct transport;
  * When called after returning the name for the last object, return -1
  * to signal EOF, otherwise return 0.
  */
-typedef int (*oid_iterate_fn)(void *, struct object_id *oid);
+typedef const struct object_id *(*oid_iterate_fn)(void *);
 
 /*
  * Named-arguments struct for check_connected. All arguments are
@@ -46,6 +47,13 @@ struct check_connected_options {
 	 * during a fetch.
 	 */
 	unsigned is_deepening_fetch : 1;
+
+	/*
+	 * If not NULL, use `--exclude-hidden=$section` to exclude all refs
+	 * hidden via the `$section.hideRefs` config from the set of
+	 * already-reachable refs.
+	 */
+	const char *exclude_hidden_refs_section;
 };
 
 #define CHECK_CONNECTED_INIT { 0 }
@@ -59,7 +67,8 @@ struct check_connected_options {
  *
  * If "opt" is NULL, behaves as if CHECK_CONNECTED_INIT was passed.
  */
-int check_connected(oid_iterate_fn fn, void *cb_data,
+int check_connected(struct repository *repo,
+		    oid_iterate_fn fn, void *cb_data,
 		    struct check_connected_options *opt);
 
 #endif /* CONNECTED_H */

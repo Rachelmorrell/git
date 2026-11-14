@@ -4,6 +4,7 @@
 #
 
 test_description='pack index with 64-bit offsets and object CRC'
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -14,7 +15,7 @@ test_expect_success 'setup' '
 	i=1 &&
 	while test $i -le 100
 	do
-		iii=$(printf "%03i" $i)
+		iii=$(printf "%03i" $i) &&
 		test-tool genrandom "bar" 200 > wide_delta_$iii &&
 		test-tool genrandom "baz $iii" 50 >> wide_delta_$iii &&
 		test-tool genrandom "foo"$i 100 > deep_delta_$iii &&
@@ -263,25 +264,49 @@ tag guten tag
 This is an invalid tag.
 EOF
 
-	tag=$(git hash-object -t tag -w --stdin <wrong-tag) &&
+	tag=$(git hash-object -t tag -w --stdin --literally <wrong-tag) &&
 	pack1=$(echo $tag $sha | git pack-objects tag-test) &&
 	echo remove tag object &&
 	thirtyeight=${tag#??} &&
 	rm -f .git/objects/${tag%$thirtyeight}/$thirtyeight &&
 	git index-pack --strict tag-test-${pack1}.pack 2>err &&
-	grep "^warning:.* expected .tagger. line" err
+	test_grep "^warning:.* expected .tagger. line" err
 '
 
 test_expect_success 'index-pack --fsck-objects also warns upon missing tagger in tag' '
 	git index-pack --fsck-objects tag-test-${pack1}.pack 2>err &&
-	grep "^warning:.* expected .tagger. line" err
+	test_grep "^warning:.* expected .tagger. line" err
 '
 
 test_expect_success 'index-pack -v --stdin produces progress for both phases' '
 	pack=$(git pack-objects --all pack </dev/null) &&
 	GIT_PROGRESS_DELAY=0 git index-pack -v --stdin <pack-$pack.pack 2>err &&
-	test_i18ngrep "Receiving objects" err &&
-	test_i18ngrep "Resolving deltas" err
+	test_grep "Receiving objects" err &&
+	test_grep "Resolving deltas" err
+'
+
+test_expect_success 'too-large packs report the breach' '
+	pack=$(git pack-objects --all pack </dev/null) &&
+	sz="$(test_file_size pack-$pack.pack)" &&
+	test "$sz" -gt 20 &&
+	test_must_fail git index-pack --max-input-size=20 pack-$pack.pack 2>err &&
+	test_grep "maximum allowed size (20 bytes)" err
+'
+
+# git-index-pack(1) uses the default hash algorithm outside of the repository,
+# and it has no way to tell it otherwise. So we can only run this test with the
+# default hash algorithm, as it would otherwise fail to parse the tree.
+test_expect_success DEFAULT_HASH_ALGORITHM 'index-pack --fsck-objects outside of a repo' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		printf "100644 blob $(test_oid 001)\t.gitattributes\n" >tree &&
+		git mktree --missing <tree >tree-oid &&
+		git pack-objects <tree-oid pack &&
+		test_must_fail nongit git index-pack --fsck-objects "$(pwd)"/pack-*.pack 2>err &&
+		test_grep "cannot perform queued object checks outside of a repository" err
+	)
 '
 
 test_done

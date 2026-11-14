@@ -22,16 +22,17 @@
 typedef int (*prio_queue_compare_fn)(const void *one, const void *two, void *cb_data);
 
 struct prio_queue_entry {
-	unsigned ctr;
+	size_t ctr;
 	void *data;
 };
 
 struct prio_queue {
 	prio_queue_compare_fn compare;
-	unsigned insertion_ctr;
+	size_t insertion_ctr;
 	void *cb_data;
-	int alloc, nr;
+	size_t alloc, nr_; /* use prio_queue_size() for logical count */
 	struct prio_queue_entry *array;
+	unsigned get_pending;
 };
 
 /*
@@ -51,6 +52,16 @@ void *prio_queue_get(struct prio_queue *);
  * prio_queue_get, but do not remove it from the queue.
  */
 void *prio_queue_peek(struct prio_queue *);
+
+static inline size_t prio_queue_size(const struct prio_queue *queue)
+{
+	return queue->nr_ - queue->get_pending;
+}
+
+#define prio_queue_for_each(queue, it) \
+	for (size_t pq_ix_ = (queue)->get_pending; \
+	     pq_ix_ < (queue)->nr_ && ((it) = (queue)->array[pq_ix_].data, 1); \
+	     pq_ix_++)
 
 void clear_prio_queue(struct prio_queue *);
 

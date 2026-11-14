@@ -3,12 +3,14 @@
 # Copyright (c) 2007 Kristian Høgsberg <krh@redhat.com>
 #
 
-# FIXME: Test the various index usages, -i and -o, test reflog,
-# signoff
+# FIXME: Test the various index usages, test reflog
 
 test_description='git commit'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
-. "$TEST_DIRECTORY/diff-lib.sh"
+. "$TEST_DIRECTORY/lib-diff.sh"
 
 author='The Real Author <someguy@his.email.org>'
 
@@ -18,7 +20,7 @@ test_expect_success 'initial status' '
 	echo bongo bongo >file &&
 	git add file &&
 	git status >actual &&
-	test_i18ngrep "No commits yet" actual
+	test_grep "No commits yet" actual
 '
 
 test_expect_success 'fail initial amend' '
@@ -44,7 +46,7 @@ test_expect_success 'paths and -a do not mix' '
 	test_must_fail git commit -m foo -a file
 '
 
-test_expect_success PERL 'can use paths with --interactive' '
+test_expect_success 'can use paths with --interactive' '
 	echo bong-o-bong >file &&
 	# 2: update, 1:st path, that is all, 7: quit
 	test_write_lines 2 1 "" 7 |
@@ -89,6 +91,20 @@ test_expect_success '--long fails with nothing to commit' '
 	test_must_fail git commit -m initial --long
 '
 
+test_expect_success 'fail to commit untracked file (even with --include/--only)' '
+	echo content >baz &&
+	error="error: pathspec .baz. did not match any file(s) known to git" &&
+
+	test_must_fail git commit -m "baz" baz 2>err &&
+	test_grep -e "$error" err &&
+
+	test_must_fail git commit --only -m "baz" baz 2>err &&
+	test_grep -e "$error" err &&
+
+	test_must_fail git commit --include -m "baz" baz 2>err &&
+	test_grep -e "$error" err
+'
+
 test_expect_success 'setup: non-initial commit' '
 	echo bongo bongo bongo >file &&
 	git commit -m next -a
@@ -112,6 +128,51 @@ test_expect_success '--porcelain with stuff to commit returns ok' '
 test_expect_success '--long with stuff to commit returns ok' '
 	echo bongo bongo bongo >>file &&
 	git commit -m next -a --long
+'
+
+for opt in "" "-o" "--only"
+do
+	test_expect_success 'exclude additional staged changes when given pathspec' '
+		echo content >>file &&
+		echo content >>baz &&
+		git add baz &&
+		git commit $opt -m "file" file &&
+
+		git diff --name-only >actual &&
+		test_must_be_empty actual &&
+
+		test_write_lines baz >expect &&
+		git diff --name-only --cached >actual &&
+		test_cmp expect actual &&
+
+		test_write_lines file >expect &&
+		git diff --name-only HEAD^ HEAD >actual &&
+		test_cmp expect actual
+	'
+done
+
+test_expect_success '-i/--include includes staged changes' '
+	echo content >>file &&
+	echo content >>baz &&
+	git add file &&
+
+	# baz is in the index, therefore, it will be committed
+	git commit --include -m "file and baz" baz  &&
+
+	git diff --name-only HEAD >remaining &&
+	test_must_be_empty remaining &&
+
+	test_write_lines baz file >expect &&
+	git diff --name-only HEAD^ HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--include and --only do not mix' '
+	test_when_finished "git reset --hard" &&
+	echo content >>file &&
+	echo content >>baz &&
+	test_must_fail git commit --include --only -m "file baz" file baz 2>actual &&
+	test_grep -e "fatal: options .-i/--include. and .-o/--only. cannot be used together" actual
 '
 
 test_expect_success 'commit message from non-existing file' '
@@ -138,7 +199,7 @@ test_expect_success 'template "emptyness" check does not kick in with -F' '
 test_expect_success 'template "emptyness" check' '
 	git checkout HEAD file && echo >>file && git add file &&
 	test_must_fail git commit -t file 2>err &&
-	test_i18ngrep "did not edit" err
+	test_grep "did not edit" err
 '
 
 test_expect_success 'setup: commit message from file' '
@@ -281,15 +342,15 @@ test_expect_success 'overriding author from command line' '
 	echo gak >file &&
 	git commit -m author \
 		--author "Rubber Duck <rduck@convoy.org>" -a >output 2>&1 &&
-	grep Rubber.Duck output
+	test_grep Rubber.Duck output
 '
 
-test_expect_success PERL 'interactive add' '
+test_expect_success 'interactive add' '
 	echo 7 | test_must_fail git commit --interactive >out &&
-	grep "What now" out
+	test_grep "What now" out
 '
 
-test_expect_success PERL "commit --interactive doesn't change index if editor aborts" '
+test_expect_success "commit --interactive doesn't change index if editor aborts" '
 	echo zoo >file &&
 	test_must_fail git diff --exit-code >diff1 &&
 	test_write_lines u "*" q |
@@ -315,13 +376,13 @@ test_expect_success 'editor not invoked if -F is given' '
 
 	EDITOR=./editor git commit -a -F msg &&
 	git show -s --pretty=format:%s >subject &&
-	grep -q good subject &&
+	test_grep -q good subject &&
 
 	echo quack >file &&
 	echo Another good message. |
 	EDITOR=./editor git commit -a -F - &&
 	git show -s --pretty=format:%s >subject &&
-	grep -q good subject
+	test_grep -q good subject
 '
 
 test_expect_success 'partial commit that involves removal (1)' '
@@ -386,9 +447,31 @@ test_expect_success 'amend commit to fix date' '
 
 '
 
+test_expect_success 'amend commit to add signoff' '
+
+	test_commit "msg" file content &&
+	git commit --amend --signoff &&
+	test_commit_message HEAD <<-EOF
+	msg
+
+	Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>
+	EOF
+'
+
+test_expect_success 'amend does not add signoff if it already exists' '
+
+	test_commit --signoff "tenor" file newcontent &&
+	git commit --amend --signoff &&
+	test_commit_message HEAD <<-EOF
+	tenor
+
+	Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>
+	EOF
+'
+
 test_expect_success 'commit mentions forced date in output' '
 	git commit --amend --date=2010-01-02T03:04:05 >output &&
-	grep "Date: *Sat Jan 2 03:04:05 2010" output
+	test_grep "Date: *Sat Jan 2 03:04:05 2010" output
 '
 
 test_expect_success 'commit complains about completely bogus dates' '
@@ -408,8 +491,7 @@ test_expect_success 'sign off (1)' '
 	echo 1 >positive &&
 	git add positive &&
 	git commit -s -m "thank you" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo thank you &&
 		echo &&
@@ -428,8 +510,7 @@ test_expect_success 'sign off (2)' '
 	git commit -s -m "thank you
 
 $existing" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo thank you &&
 		echo &&
@@ -449,8 +530,7 @@ test_expect_success 'signoff gap' '
 	git commit -s -m "welcome
 
 $alt" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo welcome &&
 		echo &&
@@ -470,8 +550,7 @@ test_expect_success 'signoff gap 2' '
 
 We have now
 $alt" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo welcome &&
 		echo &&
@@ -492,8 +571,7 @@ test_expect_success 'signoff respects trailer config' '
 
 non-trailer line
 Myfooter: x" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo subject &&
 		echo &&
@@ -510,8 +588,7 @@ Myfooter: x" &&
 
 non-trailer line
 Myfooter: x" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo subject &&
 		echo &&
@@ -543,8 +620,7 @@ test_expect_success 'multiple -m' '
 	>negative &&
 	git add negative &&
 	git commit -m "one" -m "two" -m "three" &&
-	git cat-file commit HEAD >commit &&
-	sed -e "1,/^\$/d" commit >actual &&
+	commit_body HEAD >actual &&
 	(
 		echo one &&
 		echo &&
@@ -577,9 +653,9 @@ test_expect_success 'git commit <file> with dirty index' '
 	git add chz &&
 	git commit elif -m "tacocat is a palindrome" &&
 	git show --stat >stat &&
-	grep elif stat &&
+	test_grep elif stat &&
 	git diff --cached >diff &&
-	grep chz diff
+	test_grep chz diff
 '
 
 test_expect_success 'same tree (single parent)' '
@@ -593,7 +669,7 @@ test_expect_success 'same tree (single parent) --allow-empty' '
 
 	git commit --allow-empty -m "forced empty" &&
 	git cat-file commit HEAD >commit &&
-	grep forced commit
+	test_grep forced commit
 
 '
 
@@ -603,7 +679,7 @@ test_expect_success 'same tree (merge and amend merge)' '
 	echo zero >zero &&
 	git add zero &&
 	git commit -m "add zero" &&
-	git checkout master &&
+	git checkout main &&
 
 	git merge -s ours side -m "empty ok" &&
 	git diff HEAD^ HEAD >actual &&
@@ -664,14 +740,11 @@ test_expect_success 'amend can copy notes' '
 
 test_expect_success 'commit a file whose name is a dash' '
 	git reset --hard &&
-	for i in 1 2 3 4 5
-	do
-		echo $i
-	done >./- &&
+	test_write_lines 1 2 3 4 5 >./- &&
 	git add ./- &&
 	test_tick &&
 	git commit -m "add dash" >output </dev/null &&
-	test_i18ngrep " changed, 5 insertions" output
+	test_grep " changed, 5 insertions" output
 '
 
 test_expect_success '--only works on to-be-born branch' '

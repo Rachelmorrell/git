@@ -222,18 +222,18 @@ test_expect_success 'trailing whitespace & no newline at the end of file' '
 	>target &&
 	create_patch >patch-file &&
 	git apply --whitespace=fix patch-file &&
-	grep "newline$" target &&
-	grep "^$" target
+	test_grep "newline$" target &&
+	test_grep "^$" target
 '
 
 test_expect_success 'blank at EOF with --whitespace=fix (1)' '
 	test_might_fail git config --unset core.whitespace &&
 	rm -f .gitattributes &&
 
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
-	{ echo a; echo b; echo c; } >expect &&
-	{ cat expect; echo; } >one &&
+	test_write_lines a b c >expect &&
+	{ cat expect && echo; } >one &&
 	git diff -- one >patch &&
 
 	git checkout one &&
@@ -242,10 +242,10 @@ test_expect_success 'blank at EOF with --whitespace=fix (1)' '
 '
 
 test_expect_success 'blank at EOF with --whitespace=fix (2)' '
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
-	{ echo a; echo c; } >expect &&
-	{ cat expect; echo; echo; } >one &&
+	test_write_lines a b >expect &&
+	{ cat expect && test_write_lines "" ""; } >one &&
 	git diff -- one >patch &&
 
 	git checkout one &&
@@ -254,10 +254,10 @@ test_expect_success 'blank at EOF with --whitespace=fix (2)' '
 '
 
 test_expect_success 'blank at EOF with --whitespace=fix (3)' '
-	{ echo a; echo b; echo; } >one &&
+	test_write_lines a b "" >one &&
 	git add one &&
-	{ echo a; echo c; echo; } >expect &&
-	{ cat expect; echo; echo; } >one &&
+	test_write_lines a c "" >expect &&
+	{ cat expect && test_write_lines "" ""; } >one &&
 	git diff -- one >patch &&
 
 	git checkout one &&
@@ -266,9 +266,9 @@ test_expect_success 'blank at EOF with --whitespace=fix (3)' '
 '
 
 test_expect_success 'blank at end of hunk, not at EOF with --whitespace=fix' '
-	{ echo a; echo b; echo; echo; echo; echo; echo; echo d; } >one &&
+	test_write_lines a b "" "" "" "" "" d >one &&
 	git add one &&
-	{ echo a; echo c; echo; echo; echo; echo; echo; echo; echo d; } >expect &&
+	test_write_lines a b "" "" "" "" "" "" d >expect &&
 	cp expect one &&
 	git diff -- one >patch &&
 
@@ -278,7 +278,7 @@ test_expect_success 'blank at end of hunk, not at EOF with --whitespace=fix' '
 '
 
 test_expect_success 'blank at EOF with --whitespace=warn' '
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
 	echo >>one &&
 	cat one >expect &&
@@ -287,11 +287,11 @@ test_expect_success 'blank at EOF with --whitespace=warn' '
 	git checkout one &&
 	git apply --whitespace=warn patch 2>error &&
 	test_cmp expect one &&
-	grep "new blank line at EOF" error
+	test_grep "new blank line at EOF" error
 '
 
 test_expect_success 'blank at EOF with --whitespace=error' '
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
 	cat one >expect &&
 	echo >>one &&
@@ -300,11 +300,11 @@ test_expect_success 'blank at EOF with --whitespace=error' '
 	git checkout one &&
 	test_must_fail git apply --whitespace=error patch 2>error &&
 	test_cmp expect one &&
-	grep "new blank line at EOF" error
+	test_grep "new blank line at EOF" error
 '
 
 test_expect_success 'blank but not empty at EOF' '
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
 	echo "   " >>one &&
 	cat one >expect &&
@@ -313,17 +313,17 @@ test_expect_success 'blank but not empty at EOF' '
 	git checkout one &&
 	git apply --whitespace=warn patch 2>error &&
 	test_cmp expect one &&
-	grep "new blank line at EOF" error
+	test_grep "new blank line at EOF" error
 '
 
 test_expect_success 'applying beyond EOF requires one non-blank context line' '
-	{ echo; echo; echo; echo; } >one &&
+	test_write_lines "" "" "" "" >one &&
 	git add one &&
-	{ echo b; } >>one &&
+	echo b >>one &&
 	git diff -- one >patch &&
 
 	git checkout one &&
-	{ echo a; echo; } >one &&
+	test_write_lines a "" >one &&
 	cp one expect &&
 	test_must_fail git apply --whitespace=fix patch &&
 	test_cmp expect one &&
@@ -333,7 +333,7 @@ test_expect_success 'applying beyond EOF requires one non-blank context line' '
 
 test_expect_success 'tons of blanks at EOF should not apply' '
 	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-		echo; echo; echo; echo;
+		test_write_lines "" "" "" "" || return 1
 	done >one &&
 	git add one &&
 	echo a >>one &&
@@ -362,9 +362,9 @@ test_expect_success 'missing blank line at end with --whitespace=fix' '
 '
 
 test_expect_success 'two missing blank lines at end with --whitespace=fix' '
-	{ echo a; echo; echo b; echo c; } >one &&
+	test_write_lines a "" b c >one &&
 	cp one no-blank-lines &&
-	{ echo; echo; } >>one &&
+	test_write_lines "" "" >>one &&
 	git add one &&
 	echo d >>one &&
 	cp one expect &&
@@ -381,9 +381,9 @@ test_expect_success 'two missing blank lines at end with --whitespace=fix' '
 '
 
 test_expect_success 'missing blank line at end, insert before end, --whitespace=fix' '
-	{ echo a; echo; } >one &&
+	test_write_lines a "" >one &&
 	git add one &&
-	{ echo b; echo a; echo; } >one &&
+	test_write_lines b a "" >one &&
 	cp one expect &&
 	git diff -- one >patch &&
 	echo a >one &&
@@ -393,10 +393,10 @@ test_expect_success 'missing blank line at end, insert before end, --whitespace=
 '
 
 test_expect_success 'shrink file with tons of missing blanks at end of file' '
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	cp one no-blank-lines &&
 	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-		echo; echo; echo; echo;
+		test_write_lines "" "" "" "" || return 1
 	done >>one &&
 	git add one &&
 	echo a >one &&
@@ -412,9 +412,9 @@ test_expect_success 'shrink file with tons of missing blanks at end of file' '
 '
 
 test_expect_success 'missing blanks at EOF must only match blank lines' '
-	{ echo a; echo b; } >one &&
+	test_write_lines a b >one &&
 	git add one &&
-	{ echo c; echo d; } >>one &&
+	test_write_lines c d >>one &&
 	git diff -- one >patch &&
 
 	echo a >one &&
@@ -434,9 +434,9 @@ test_expect_success 'missing blank line should match context line with spaces' '
 	git add one &&
 	echo d >>one &&
 	git diff -- one >patch &&
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	cp one expect &&
-	{ echo; echo d; } >>expect &&
+	test_write_lines "" d >>expect &&
 	git add one &&
 
 	git apply --whitespace=fix patch &&
@@ -455,7 +455,7 @@ test_expect_success 'same, but with the --ignore-space-option' '
 	echo d >>one &&
 	cp one expect &&
 	git diff -- one >patch &&
-	{ echo a; echo b; echo c; } >one &&
+	test_write_lines a b c >one &&
 	git add one &&
 
 	git checkout-index -f one &&
@@ -554,6 +554,295 @@ test_expect_success 'whitespace check skipped for excluded paths' '
 	echo "unused " >unused &&
 	git diff-files -p used unused >patch &&
 	git apply --include=used --stat --whitespace=error <patch
+'
+
+test_expect_success 'check incomplete lines (setup)' '
+	rm -f .gitattributes &&
+	git config core.whitespace incomplete-line
+'
+
+test_expect_success 'no incomplete context line (not an error)' '
+	test_when_finished "rm -f sample*-i patch patch-new target" &&
+	test_write_lines 1 2 3 "" 4 5 >sample-i &&
+	test_write_lines 1 2 3 "" 0 5 >sample2-i &&
+	cat sample-i >target &&
+	git add target &&
+	cat sample2-i >target &&
+	git diff-files -p target >patch &&
+	sed -e "s/^ $//" <patch >patch-new &&
+
+	cat sample-i >target &&
+	git apply --whitespace=fix <patch-new 2>error &&
+	test_cmp sample2-i target &&
+	test_must_be_empty error
+'
+
+test_expect_success 'incomplete context line (not an error)' '
+	(test_write_lines 1 2 3 4 5 && printf 6) >sample-i &&
+	(test_write_lines 1 2 3 0 5 && printf 6) >sample2-i &&
+	cat sample-i >target &&
+	git add target &&
+	cat sample2-i >target &&
+	git diff-files -p target >patch &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error <patch &&
+	test_cmp sample2-i target &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error --check <patch 2>error &&
+	test_cmp sample-i target &&
+	test_must_be_empty error &&
+
+	cat sample2-i >target &&
+	git apply --whitespace=error -R <patch &&
+	test_cmp sample-i target &&
+
+	cat sample2-i >target &&
+	git apply -R --whitespace=error --check <patch 2>error &&
+	test_cmp sample2-i target &&
+	test_must_be_empty error
+'
+
+test_expect_success 'last line made incomplete (error)' '
+	test_write_lines 1 2 3 4 5 6 >sample &&
+	(test_write_lines 1 2 3 4 5 && printf 6) >sample-i &&
+	cat sample >target &&
+	git add target &&
+	cat sample-i >target &&
+	git diff-files -p target >patch &&
+
+	cat sample >target &&
+	test_must_fail git apply --whitespace=error <patch 2>error &&
+	test_grep "no newline" error &&
+
+	cat sample >target &&
+	test_must_fail git apply --whitespace=error --check <patch 2>actual &&
+	test_cmp sample target &&
+	cat >expect <<-\EOF &&
+	<stdin>:10: no newline at the end of file.
+	6
+	error: 1 line adds whitespace errors.
+	EOF
+	test_cmp expect actual &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error -R <patch &&
+	test_cmp sample target &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error --check -R <patch 2>error &&
+	test_cmp sample-i target &&
+	test_must_be_empty error &&
+
+	cat sample >target &&
+	git apply --whitespace=fix <patch &&
+	test_cmp sample target
+'
+
+test_expect_success 'incomplete line removed at the end (not an error)' '
+	(test_write_lines 1 2 3 4 5 && printf 6) >sample-i &&
+	test_write_lines 1 2 3 4 5 6 >sample &&
+	cat sample-i >target &&
+	git add target &&
+	cat sample >target &&
+	git diff-files -p target >patch &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error <patch &&
+	test_cmp sample target &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error --check <patch 2>error &&
+	test_cmp sample-i target &&
+	test_must_be_empty error &&
+
+	cat sample >target &&
+	test_must_fail git apply --whitespace=error -R <patch 2>error &&
+	test_grep "no newline" error &&
+
+	cat sample >target &&
+	test_must_fail git apply --whitespace=error --check -R <patch 2>actual &&
+	test_cmp sample target &&
+	cat >expect <<-\EOF &&
+	<stdin>:9: no newline at the end of file.
+	6
+	error: 1 line adds whitespace errors.
+	EOF
+	test_cmp expect actual &&
+
+	cat sample >target &&
+	git apply --whitespace=fix -R <patch &&
+	test_cmp sample target
+'
+
+test_expect_success 'incomplete line corrected at the end (not an error)' '
+	(test_write_lines 1 2 3 4 5 && printf 6) >sample-i &&
+	test_write_lines 1 2 3 4 5 7 >sample3 &&
+	cat sample-i >target &&
+	git add target &&
+	cat sample3 >target &&
+	git diff-files -p target >patch &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error <patch &&
+	test_cmp sample3 target &&
+
+	cat sample-i >target &&
+	git apply --whitespace=error --check <patch 2>error &&
+	test_cmp sample-i target &&
+	test_must_be_empty error &&
+
+	cat sample3 >target &&
+	test_must_fail git apply --whitespace=error -R <patch 2>error &&
+	test_grep "no newline" error &&
+
+	cat sample3 >target &&
+	test_must_fail git apply --whitespace=error -R --check <patch 2>actual &&
+	test_cmp sample3 target &&
+	cat >expect <<-\EOF &&
+	<stdin>:9: no newline at the end of file.
+	6
+	error: 1 line adds whitespace errors.
+	EOF
+	test_cmp expect actual &&
+
+	cat sample3 >target &&
+	git apply --whitespace=fix -R <patch &&
+	test_cmp sample target
+'
+
+test_expect_success 'incomplete line modified at the end (error)' '
+	(test_write_lines 1 2 3 4 5 && printf 6) >sample-i &&
+	(test_write_lines 1 2 3 4 5 && printf 7) >sample3-i &&
+	test_write_lines 1 2 3 4 5 6 >sample &&
+	test_write_lines 1 2 3 4 5 7 >sample3 &&
+	cat sample-i >target &&
+	git add target &&
+	cat sample3-i >target &&
+	git diff-files -p target >patch &&
+
+	cat sample-i >target &&
+	test_must_fail git apply --whitespace=error <patch 2>error &&
+	test_grep "no newline" error &&
+
+	cat sample-i >target &&
+	test_must_fail git apply --whitespace=error --check <patch 2>actual &&
+	test_cmp sample-i target &&
+	cat >expect <<-\EOF &&
+	<stdin>:11: no newline at the end of file.
+	7
+	error: 1 line adds whitespace errors.
+	EOF
+	test_cmp expect actual &&
+
+	cat sample3-i >target &&
+	test_must_fail git apply --whitespace=error -R <patch 2>error &&
+	test_grep "no newline" error &&
+
+	cat sample3-i >target &&
+	test_must_fail git apply --whitespace=error --check -R <patch 2>actual &&
+	test_cmp sample3-i target &&
+	cat >expect <<-\EOF &&
+	<stdin>:9: no newline at the end of file.
+	6
+	error: 1 line adds whitespace errors.
+	EOF
+	test_cmp expect actual &&
+
+	cat sample-i >target &&
+	git apply --whitespace=fix <patch &&
+	test_cmp sample3 target &&
+
+	cat sample3-i >target &&
+	git apply --whitespace=fix -R <patch &&
+	test_cmp sample target
+'
+
+test_expect_success "incomplete-line error is disabled for symlinks" '
+	test_when_finished "git reset" &&
+	test_when_finished "rm -f patch.txt" &&
+	oneblob=$(printf "one" | git hash-object --stdin -w -t blob) &&
+	twoblob=$(printf "two" | git hash-object --stdin -w -t blob) &&
+
+	oneshort=$(git rev-parse --short $oneblob) &&
+	twoshort=$(git rev-parse --short $twoblob) &&
+
+	cat >patch0.txt <<-EOF &&
+	diff --git a/mylink b/mylink
+	index $oneshort..$twoshort 120000
+	--- a/mylink
+	+++ b/mylink
+	@@ -1 +1 @@
+	-one
+	\ No newline at end of file
+	+two
+	\ No newline at end of file
+	EOF
+
+	# the index has the preimage symlink
+	git update-index --add --cacheinfo "120000,$oneblob,mylink" &&
+
+	# check the patch going forward and reverse
+	git -c core.whitespace=incomplete apply --cached --check \
+		--whitespace=error patch0.txt &&
+
+	git update-index --add --cacheinfo "120000,$twoblob,mylink" &&
+	git -c core.whitespace=incomplete apply --cached --check \
+		--whitespace=error -R patch0.txt &&
+
+	# the patch turns it into the postimage symlink
+	git update-index --add --cacheinfo "120000,$oneblob,mylink" &&
+	git -c core.whitespace=incomplete apply --cached --whitespace=error \
+		patch0.txt &&
+
+	# and then back.
+	git -c core.whitespace=incomplete apply --cached -R --whitespace=error \
+		patch0.txt &&
+
+	# a text file turns into a symlink
+	cat >patch1.txt <<-EOF &&
+	diff --git a/mylink b/mylink
+	deleted file mode 100644
+	index $oneshort..0000000
+	--- a/mylink
+	+++ /dev/null
+	@@ -1 +0,0 @@
+	-one
+	\ No newline at end of file
+	diff --git a/mylink b/mylink
+	new file mode 120000
+	index 0000000..$twoshort
+	--- /dev/null
+	+++ b/mylink
+	@@ -0,0 +1 @@
+	+two
+	\ No newline at end of file
+	EOF
+
+	# the index has the preimage text
+	git update-index --cacheinfo "100644,$oneblob,mylink" &&
+
+	# check
+	git -c core.whitespace=incomplete apply --cached \
+		--check --whitespace=error patch1.txt &&
+
+	# reverse, leaving an incomplete text file, should error
+	git update-index --cacheinfo "120000,$twoblob,mylink" &&
+	test_must_fail git -c core.whitespace=incomplete \
+		apply --cached --check --whitespace=error -R patch1.txt &&
+
+	# apply to create a symbolic link
+	git update-index --cacheinfo "100644,$oneblob,mylink" &&
+	git -c core.whitespace=incomplete apply --cached --whitespace=error \
+		patch1.txt &&
+
+	# turning it back into an incomplete text file is an error
+	test_must_fail git -c core.whitespace=incomplete \
+		apply --cached --whitespace=error -R patch1.txt
+
+
+
 '
 
 test_done

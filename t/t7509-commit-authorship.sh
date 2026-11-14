@@ -12,17 +12,9 @@ author_header () {
 	sed -n -e '/^$/q' -e '/^author /p'
 }
 
-message_body () {
-	git cat-file commit "$1" |
-	sed -e '1,/^$/d'
-}
-
 test_expect_success '-C option copies authorship and message' '
-	echo "Initial" >foo &&
-	git add foo &&
-	test_tick &&
-	git commit -m "Initial Commit" --author Frigate\ \<flying@over.world\> &&
-	git tag Initial &&
+	test_commit --author Frigate\ \<flying@over.world\> \
+		"Initial Commit" foo Initial Initial &&
 	echo "Test 1" >>foo &&
 	test_tick &&
 	git commit -a -C Initial &&
@@ -30,8 +22,8 @@ test_expect_success '-C option copies authorship and message' '
 	author_header HEAD >actual &&
 	test_cmp expect actual &&
 
-	message_body Initial >expect &&
-	message_body HEAD >actual &&
+	commit_body Initial >expect &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
@@ -43,8 +35,8 @@ test_expect_success '-C option copies only the message with --reset-author' '
 	author_header HEAD >actual &&
 	test_cmp expect actual &&
 
-	message_body Initial >expect &&
-	message_body HEAD >actual &&
+	commit_body Initial >expect &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
@@ -65,8 +57,8 @@ test_expect_success '-c option copies only the message with --reset-author' '
 	author_header HEAD >actual &&
 	test_cmp expect actual &&
 
-	message_body Initial >expect &&
-	message_body HEAD >actual &&
+	commit_body Initial >expect &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
@@ -80,7 +72,7 @@ test_expect_success '--amend option copies authorship' '
 	test_cmp expect actual &&
 
 	echo "amend test" >expect &&
-	message_body HEAD >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
@@ -101,20 +93,20 @@ test_expect_success '--amend option with empty author' '
 	echo "Empty author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "empty author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	test_grep "empty ident" err
 '
 
 test_expect_success '--amend option with missing author' '
 	git cat-file commit Initial >tmp &&
 	sed "s/author [^<]* </author </" tmp >malformed &&
-	sha=$(git hash-object -t commit -w malformed) &&
+	sha=$(git hash-object --literally -t commit -w malformed) &&
 	test_when_finished "remove_object $sha" &&
 	git checkout $sha &&
 	test_when_finished "git checkout Initial" &&
 	echo "Missing author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "malformed author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	test_grep "empty ident" err
 '
 
 test_expect_success '--reset-author makes the commit ours even with --amend option' '
@@ -127,7 +119,7 @@ test_expect_success '--reset-author makes the commit ours even with --amend opti
 	test_cmp expect actual &&
 
 	echo "Changed again" >expect &&
-	message_body HEAD >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
@@ -150,7 +142,7 @@ test_expect_success 'commit respects CHERRY_PICK_HEAD and MERGE_MSG' '
 	test_tick &&
 	git commit -am "cherry-pick 1" --author="Cherry <cherry@pick.er>" &&
 	git tag cherry-pick-head &&
-	git rev-parse cherry-pick-head >.git/CHERRY_PICK_HEAD &&
+	git update-ref CHERRY_PICK_HEAD $(git rev-parse cherry-pick-head) &&
 	echo "This is a MERGE_MSG" >.git/MERGE_MSG &&
 	echo "cherry-pick 1b" >>foo &&
 	test_tick &&
@@ -160,12 +152,12 @@ test_expect_success 'commit respects CHERRY_PICK_HEAD and MERGE_MSG' '
 	test_cmp expect actual &&
 
 	echo "This is a MERGE_MSG" >expect &&
-	message_body HEAD >actual &&
+	commit_body HEAD >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success '--reset-author with CHERRY_PICK_HEAD' '
-	git rev-parse cherry-pick-head >.git/CHERRY_PICK_HEAD &&
+	git update-ref CHERRY_PICK_HEAD $(git rev-parse cherry-pick-head) &&
 	echo "cherry-pick 2" >>foo &&
 	test_tick &&
 	git commit -am "cherry-pick 2" --reset-author &&

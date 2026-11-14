@@ -5,8 +5,7 @@ test_description='remote push rejects are reported by client'
 . ./test-lib.sh
 
 test_expect_success 'setup' '
-	mkdir .git/hooks &&
-	write_script .git/hooks/update <<-\EOF &&
+	test_hook update <<-\EOF &&
 	exit 1
 	EOF
 	echo 1 >file &&
@@ -20,6 +19,6 @@ test_expect_success 'setup' '
 
 test_expect_success 'push reports error' 'test_must_fail git push 2>stderr'
 
-test_expect_success 'individual ref reports error' 'grep rejected stderr'
+test_expect_success 'individual ref reports error' 'test_grep rejected stderr'
 
 test_done

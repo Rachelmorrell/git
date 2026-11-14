@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='git commit races'
+
 . ./test-lib.sh
 
 test_expect_success 'race to create orphan commit' '
@@ -9,8 +10,9 @@ test_expect_success 'race to create orphan commit' '
 	EOF
 	test_must_fail env EDITOR=./hare-editor git commit --allow-empty -m tortoise -e &&
 	git show -s --pretty=format:%s >subject &&
-	grep hare subject &&
-	test -z "$(git show -s --pretty=format:%P)"
+	test_grep hare subject &&
+	git show -s --pretty=format:%P >out &&
+	test_must_be_empty out
 '
 
 test_expect_success 'race to create non-orphan commit' '
@@ -22,7 +24,7 @@ test_expect_success 'race to create non-orphan commit' '
 	git rev-parse HEAD >base &&
 	test_must_fail env EDITOR=./airplane-editor git commit --allow-empty -m ship -e &&
 	git show -s --pretty=format:%s >subject &&
-	grep airplane subject &&
+	test_grep airplane subject &&
 	git rev-parse HEAD^ >parent &&
 	test_cmp base parent
 '

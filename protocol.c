@@ -1,6 +1,10 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "config.h"
+#include "environment.h"
 #include "protocol.h"
+#include "trace2.h"
 
 static enum protocol_version parse_protocol_version(const char *value)
 {
@@ -20,7 +24,7 @@ enum protocol_version get_protocol_version_config(void)
 	const char *git_test_k = "GIT_TEST_PROTOCOL_VERSION";
 	const char *git_test_v;
 
-	if (!git_config_get_string_tmp("protocol.version", &value)) {
+	if (!repo_config_get_string_tmp(the_repository, "protocol.version", &value)) {
 		enum protocol_version version = parse_protocol_version(value);
 
 		if (version == protocol_unknown_version)
@@ -57,7 +61,7 @@ enum protocol_version determine_protocol_version_server(void)
 	if (git_protocol) {
 		struct string_list list = STRING_LIST_INIT_DUP;
 		const struct string_list_item *item;
-		string_list_split(&list, git_protocol, ':', -1);
+		string_list_split(&list, git_protocol, ":", -1);
 
 		for_each_string_list_item(item, &list) {
 			const char *value;
@@ -72,6 +76,8 @@ enum protocol_version determine_protocol_version_server(void)
 
 		string_list_clear(&list, 0);
 	}
+
+	trace2_data_intmax("transfer", NULL, "negotiated-version", version);
 
 	return version;
 }

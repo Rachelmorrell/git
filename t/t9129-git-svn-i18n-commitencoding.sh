@@ -14,12 +14,12 @@ compare_git_head_with () {
 	test_cmp current "$1"
 }
 
-prepare_a_utf8_locale
+prepare_utf8_locale
 
 compare_svn_head_with () {
 	# extract just the log message and strip out committer info.
 	# don't use --limit here since svn 1.1.x doesn't have it,
-	LC_ALL="$a_utf8_locale" svn log $(git svn info --url) | perl -w -e '
+	LC_ALL="$GIT_TEST_UTF8_LOCALE" svn log $(git svn info --url) | perl -w -e '
 		use bytes;
 		$/ = ("-"x72) . "\n";
 		my @x = <STDIN>;
@@ -71,7 +71,7 @@ do
 	'
 done
 
-test_expect_success UTF8 'ISO-8859-1 should match UTF-8 in svn' '
+test_expect_success UTF8,!MINGW 'ISO-8859-1 should match UTF-8 in svn' '
 	(
 		cd ISO8859-1 &&
 		compare_svn_head_with "$TEST_DIRECTORY"/t3900/1-UTF-8.txt
@@ -80,7 +80,7 @@ test_expect_success UTF8 'ISO-8859-1 should match UTF-8 in svn' '
 
 for H in eucJP ISO-2022-JP
 do
-	test_expect_success UTF8 "$H should match UTF-8 in svn" '
+	test_expect_success UTF8,!MINGW "$H should match UTF-8 in svn" '
 		(
 			cd $H &&
 			compare_svn_head_with "$TEST_DIRECTORY"/t3900/2-UTF-8.txt

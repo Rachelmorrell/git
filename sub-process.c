@@ -1,14 +1,15 @@
 /*
  * Generic implementation of background process infrastructure.
  */
+#include "git-compat-util.h"
 #include "sub-process.h"
 #include "sigchain.h"
 #include "pkt-line.h"
 
-int cmd2process_cmp(const void *unused_cmp_data,
+int cmd2process_cmp(const void *cmp_data UNUSED,
 		    const struct hashmap_entry *eptr,
 		    const struct hashmap_entry *entry_or_key,
-		    const void *unused_keydata)
+		    const void *keydata UNUSED)
 {
 	const struct subprocess_entry *e1, *e2;
 
@@ -29,23 +30,20 @@ struct subprocess_entry *subprocess_find_entry(struct hashmap *hashmap, const ch
 
 int subprocess_read_status(int fd, struct strbuf *status)
 {
-	struct strbuf **pair;
-	char *line;
 	int len;
 
 	for (;;) {
+		char *line;
+		const char *value;
+
 		len = packet_read_line_gently(fd, NULL, &line);
 		if ((len < 0) || !line)
 			break;
-		pair = strbuf_split_str(line, '=', 2);
-		if (pair[0] && pair[0]->len && pair[1]) {
+		if (skip_prefix(line, "status=", &value)) {
 			/* the last "status=<foo>" line wins */
-			if (!strcmp(pair[0]->buf, "status=")) {
-				strbuf_reset(status);
-				strbuf_addbuf(status, pair[1]);
-			}
+			strbuf_reset(status);
+			strbuf_addstr(status, value);
 		}
-		strbuf_list_free(pair);
 	}
 
 	return (len < 0) ? len : 0;
@@ -134,17 +132,24 @@ static int handshake_version(struct child_process *process,
 	if (packet_flush_gently(process->in))
 		return error("Could not write flush packet");
 
-	if (!(line = packet_read_line(process->out, NULL)) ||
-	    !skip_prefix(line, welcome_prefix, &p) ||
+	if (packet_read_line_gently(process->out, NULL, &line) < 0)
+		return error("could not read greeting from subprocess '%s'",
+			     process->args.v[0]);
+	if (!line || !skip_prefix(line, welcome_prefix, &p) ||
 	    strcmp(p, "-server"))
 		return error("Unexpected line '%s', expected %s-server",
 			     line ? line : "<flush packet>", welcome_prefix);
-	if (!(line = packet_read_line(process->out, NULL)) ||
-	    !skip_prefix(line, "version=", &p) ||
+	if (packet_read_line_gently(process->out, NULL, &line) < 0)
+		return error("could not read version from subprocess '%s'",
+			     process->args.v[0]);
+	if (!line || !skip_prefix(line, "version=", &p) ||
 	    strtol_i(p, 10, chosen_version))
 		return error("Unexpected line '%s', expected version",
 			     line ? line : "<flush packet>");
-	if ((line = packet_read_line(process->out, NULL)))
+	if (packet_read_line_gently(process->out, NULL, &line) < 0)
+		return error("could not read version flush from subprocess '%s'",
+			     process->args.v[0]);
+	if (line)
 		return error("Unexpected line '%s', expected flush", line);
 
 	/* Check to make sure that the version received is supported */
@@ -173,8 +178,15 @@ static int handshake_capabilities(struct child_process *process,
 	if (packet_flush_gently(process->in))
 		return error("Could not write flush packet");
 
-	while ((line = packet_read_line(process->out, NULL))) {
+	for (;;) {
 		const char *p;
+		int len = packet_read_line_gently(process->out, NULL, &line);
+
+		if (len < 0)
+			return error("could not read capabilities from subprocess '%s'",
+				     process->args.v[0]);
+		if (!line)
+			break;
 		if (!skip_prefix(line, "capability=", &p))
 			continue;
 
@@ -187,7 +199,7 @@ static int handshake_capabilities(struct child_process *process,
 				*supported_capabilities |= capabilities[i].flag;
 		} else {
 			die("subprocess '%s' requested unsupported capability '%s'",
-			    process->argv[0], p);
+			    process->args.v[0], p);
 		}
 	}
 

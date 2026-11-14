@@ -1,13 +1,22 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "builtin.h"
 #include "commit.h"
 #include "diff.h"
+#include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "revision.h"
-#include "builtin.h"
 #include "reachable.h"
 #include "parse-options.h"
+#include "path.h"
 #include "progress.h"
 #include "prune-packed.h"
-#include "object-store.h"
+#include "replace-object.h"
+#include "object-file.h"
+#include "object-name.h"
+#include "odb.h"
 #include "shallow.h"
 
 static const char * const prune_usage[] = {
@@ -26,10 +35,22 @@ static int prune_tmp_file(const char *fullpath)
 		return error("Could not stat '%s'", fullpath);
 	if (st.st_mtime > expire)
 		return 0;
-	if (show_only || verbose)
-		printf("Removing stale temporary file %s\n", fullpath);
-	if (!show_only)
-		unlink_or_warn(fullpath);
+	if (S_ISDIR(st.st_mode)) {
+		if (show_only || verbose)
+			printf("Removing stale temporary directory %s\n", fullpath);
+		if (!show_only) {
+			struct strbuf remove_dir_buf = STRBUF_INIT;
+
+			strbuf_addstr(&remove_dir_buf, fullpath);
+			remove_dir_recursively(&remove_dir_buf, 0);
+			strbuf_release(&remove_dir_buf);
+		}
+	} else {
+		if (show_only || verbose)
+			printf("Removing stale temporary file %s\n", fullpath);
+		if (!show_only)
+			unlink_or_warn(fullpath);
+	}
 	return 0;
 }
 
@@ -42,7 +63,8 @@ static void perform_reachability_traversal(struct rev_info *revs)
 		return;
 
 	if (show_progress)
-		progress = start_delayed_progress(_("Checking connectivity"), 0);
+		progress = start_delayed_progress(revs->repo,
+						  _("Checking connectivity"), 0);
 	mark_reachable_objects(revs, 1, expire, progress);
 	stop_progress(&progress);
 	initialized = 1;
@@ -55,7 +77,7 @@ static int is_object_reachable(const struct object_id *oid,
 
 	perform_reachability_traversal(revs);
 
-	obj = lookup_object(the_repository, oid);
+	obj = lookup_object(revs->repo, oid);
 	return obj && (obj->flags & SEEN);
 }
 
@@ -76,8 +98,8 @@ static int prune_object(const struct object_id *oid, const char *fullpath,
 	if (st.st_mtime > expire)
 		return 0;
 	if (show_only || verbose) {
-		enum object_type type = oid_object_info(the_repository, oid,
-							NULL);
+		enum object_type type =
+			odb_read_object_info(revs->repo->objects, oid, NULL);
 		printf("%s %s\n", oid_to_hex(oid),
 		       (type > 0) ? type_name(type) : "unknown");
 	}
@@ -86,7 +108,8 @@ static int prune_object(const struct object_id *oid, const char *fullpath,
 	return 0;
 }
 
-static int prune_cruft(const char *basename, const char *path, void *data)
+static int prune_cruft(const char *basename, const char *path,
+		       void *data UNUSED)
 {
 	if (starts_with(basename, "tmp_obj_"))
 		prune_tmp_file(path);
@@ -95,7 +118,8 @@ static int prune_cruft(const char *basename, const char *path, void *data)
 	return 0;
 }
 
-static int prune_subdir(unsigned int nr, const char *path, void *data)
+static int prune_subdir(unsigned int nr UNUSED, const char *path,
+			void *data UNUSED)
 {
 	if (!show_only)
 		rmdir(path);
@@ -115,7 +139,9 @@ static void remove_temporary_files(const char *path)
 
 	dir = opendir(path);
 	if (!dir) {
-		fprintf(stderr, "Unable to open directory %s\n", path);
+		if (errno != ENOENT)
+			fprintf(stderr, "Unable to open directory %s: %s\n",
+				path, strerror(errno));
 		return;
 	}
 	while ((de = readdir(dir)) != NULL)
@@ -124,7 +150,10 @@ static void remove_temporary_files(const char *path)
 	closedir(dir);
 }
 
-int cmd_prune(int argc, const char **argv, const char *prefix)
+int cmd_prune(int argc,
+	      const char **argv,
+	      const char *prefix,
+	      struct repository *repo)
 {
 	struct rev_info revs;
 	int exclude_promisor_objects = 0;
@@ -142,22 +171,20 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 
 	expire = TIME_MAX;
 	save_commit_buffer = 0;
-	read_replace_refs = 0;
-	ref_paranoia = 1;
-	repo_init_revisions(the_repository, &revs, prefix);
+	disable_replace_refs();
 
 	argc = parse_options(argc, argv, prefix, options, prune_usage, 0);
 
-	if (repository_format_precious_objects)
+	repo_init_revisions(repo, &revs, prefix);
+	if (repo->repository_format_precious_objects)
 		die(_("cannot prune in a precious-objects repo"));
 
 	while (argc--) {
 		struct object_id oid;
 		const char *name = *argv++;
 
-		if (!get_oid(name, &oid)) {
-			struct object *object = parse_object_or_die(&oid,
-								    name);
+		if (!repo_get_oid(repo, name, &oid)) {
+			struct object *object = parse_object_or_die(repo, &oid, name);
 			add_pending_object(&revs, object, "");
 		}
 		else
@@ -167,23 +194,24 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 	if (show_progress == -1)
 		show_progress = isatty(2);
 	if (exclude_promisor_objects) {
-		fetch_if_missing = 0;
+		repo->fetch_if_missing = 0;
 		revs.exclude_promisor_objects = 1;
 	}
 
-	for_each_loose_file_in_objdir(get_object_directory(), prune_object,
-				      prune_cruft, prune_subdir, &revs);
+	for_each_loose_file_in_source(repo->objects->source,
+				      prune_object, prune_cruft, prune_subdir, &revs);
 
-	prune_packed_objects(show_only ? PRUNE_PACKED_DRY_RUN : 0);
-	remove_temporary_files(get_object_directory());
-	s = mkpathdup("%s/pack", get_object_directory());
+	prune_packed_objects(repo, show_only ? PRUNE_PACKED_DRY_RUN : 0);
+	remove_temporary_files(repo_get_object_directory(repo));
+	s = mkpathdup("%s/pack", repo_get_object_directory(repo));
 	remove_temporary_files(s);
 	free(s);
 
-	if (is_repository_shallow(the_repository)) {
+	if (is_repository_shallow(repo)) {
 		perform_reachability_traversal(&revs);
 		prune_shallow(show_only ? PRUNE_SHOW_ONLY : 0);
 	}
 
+	release_revisions(&revs);
 	return 0;
 }

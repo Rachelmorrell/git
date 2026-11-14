@@ -1,5 +1,9 @@
-#include "cache.h"
-#include "config.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
+#include "parse.h"
+#include "environment.h"
+#include "repository.h"
 #include "run-command.h"
 #include "strbuf.h"
 #include "prompt.h"
@@ -8,15 +12,12 @@
 static char *do_askpass(const char *cmd, const char *prompt)
 {
 	struct child_process pass = CHILD_PROCESS_INIT;
-	const char *args[3];
 	static struct strbuf buffer = STRBUF_INIT;
 	int err = 0;
 
-	args[0] = cmd;
-	args[1]	= prompt;
-	args[2] = NULL;
+	strvec_push(&pass.args, cmd);
+	strvec_push(&pass.args, prompt);
 
-	pass.argv = args;
 	pass.out = -1;
 
 	if (start_command(&pass))
@@ -51,7 +52,7 @@ char *git_prompt(const char *prompt, int flags)
 
 		askpass = getenv("GIT_ASKPASS");
 		if (!askpass)
-			askpass = askpass_program;
+			askpass = repo_config_values(the_repository)->askpass_program;
 		if (!askpass)
 			askpass = getenv("SSH_ASKPASS");
 		if (askpass && *askpass)
@@ -77,12 +78,6 @@ char *git_prompt(const char *prompt, int flags)
 
 int git_read_line_interactively(struct strbuf *line)
 {
-	int ret;
-
 	fflush(stdout);
-	ret = strbuf_getline_lf(line, stdin);
-	if (ret != EOF)
-		strbuf_trim_trailing_newline(line);
-
-	return ret;
+	return strbuf_getline(line, stdin);
 }

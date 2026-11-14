@@ -1,8 +1,10 @@
 #ifndef XDIFF_INTERFACE_H
 #define XDIFF_INTERFACE_H
 
-#include "cache.h"
+#include "hash.h"
 #include "xdiff/xdiff.h"
+
+struct object_database;
 
 /*
  * xdiff isn't equipped to handle content over a gigabyte;
@@ -11,7 +13,28 @@
  */
 #define MAX_XDIFF_SIZE (1024UL * 1024 * 1023)
 
-typedef void (*xdiff_emit_line_fn)(void *, char *, unsigned long);
+/**
+ * The `xdiff_emit_line_fn` function can return 1 to abort early, or 0
+ * to continue processing. Note that doing so is an all-or-nothing
+ * affair, as returning 1 will return all the way to the top-level,
+ * e.g. the xdi_diff_outf() call to generate the diff.
+ *
+ * Thus returning 1 means you won't be getting any more diff lines. If
+ * you need something in-between those two options you'll to use
+ * `xdl_emit_hunk_consume_func_t` and implement your own version of
+ * xdl_emit_diff().
+ *
+ * We may extend the interface in the future to understand other more
+ * granular return values. While you should return 1 to exit early,
+ * doing so will currently make your early return indistinguishable
+ * from an error internal to xdiff, xdiff itself will see that
+ * non-zero return and translate it to -1.
+ *
+ * See "diff_grep" in diffcore-pickaxe.c and "quick_consume" in diff.c
+ * for a trick to work around this, i.e. using the "consume_callback_data"
+ * to note the desired early return.
+ */
+typedef int (*xdiff_emit_line_fn)(void *, char *, unsigned long);
 typedef void (*xdiff_emit_hunk_fn)(void *data,
 				   long old_begin, long old_nr,
 				   long new_begin, long new_nr,
@@ -24,21 +47,18 @@ int xdi_diff_outf(mmfile_t *mf1, mmfile_t *mf2,
 		  void *consume_callback_data,
 		  xpparam_t const *xpp, xdemitconf_t const *xecfg);
 int read_mmfile(mmfile_t *ptr, const char *filename);
-void read_mmblob(mmfile_t *ptr, const struct object_id *oid);
+void read_mmblob(mmfile_t *ptr, struct object_database *odb,
+		 const struct object_id *oid);
 int buffer_is_binary(const char *ptr, unsigned long size);
 
 void xdiff_set_find_func(xdemitconf_t *xecfg, const char *line, int cflags);
 void xdiff_clear_find_func(xdemitconf_t *xecfg);
-int git_xmerge_config(const char *var, const char *value, void *cb);
+struct config_context;
+int parse_conflict_style_name(const char *value);
+const char *conflict_style_name(int style);
+int git_xmerge_config(const char *var, const char *value,
+		      const struct config_context *ctx, void *cb);
 extern int git_xmerge_style;
-
-/*
- * Can be used as a no-op hunk_fn for xdi_diff_outf(), since a NULL
- * one just sends the hunk line to the line_fn callback).
- */
-void discard_hunk_line(void *priv,
-		       long ob, long on, long nb, long nn,
-		       const char *func, long funclen);
 
 /*
  * Compare the strings l1 with l2 which are of size s1 and s2 respectively.

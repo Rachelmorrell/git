@@ -135,6 +135,11 @@ __gitcomp_file_direct ()
 	__gitcomp_file "$1" ""
 }
 
+__git_complete_stashes ()
+{
+	compadd -S ' ' -- ${(f)"$(__git stash list | sed -n -e 's/:.*//p')"} && _ret=0
+}
+
 _git_zsh ()
 {
 	__gitcomp "v1.1"
@@ -202,7 +207,7 @@ __git_zsh_cmd_common ()
 __git_zsh_cmd_alias ()
 {
 	local -a list
-	list=(${${(0)"$(git config -z --get-regexp '^alias\.*')"}#alias.})
+	list=(${(0)"$(git help --aliases-for-completion)"})
 	list=(${(f)"$(printf "%s:alias for '%s'\n" ${(f@)list})"})
 	_describe -t alias-commands 'aliases' list && _ret=0
 }
@@ -227,6 +232,7 @@ __git_zsh_main ()
 		'(-p --paginate --no-pager)'{-p,--paginate}'[pipe all output into ''less'']' \
 		'(-p --paginate)--no-pager[do not pipe git output into a pager]' \
 		'--git-dir=-[set the path to the repository]: :_directories' \
+		'*-C[run as if git was started in <path>]: :_directories' \
 		'--bare[treat the repository as a bare repository]' \
 		'(- :)--version[prints the git suite version]' \
 		'--exec-path=-[path to where your core git programs are installed]:: :_directories' \
@@ -251,7 +257,29 @@ __git_zsh_main ()
 		done
 		;;
 	(arg)
-		local command="${words[1]}" __git_dir
+		local command="${words[1]}" __git_dir __git_cmd_idx
+		local -a __git_C_args
+		local -i i=2
+
+		while (( i <= $#orig_words )); do
+			case ${orig_words[i]} in
+			-C)
+				__git_C_args+=(-C ${orig_words[i+1]})
+				(( i++ ))
+				;;
+			-c|--git-dir|--work-tree|--namespace)
+				(( i++ ))
+				;;
+			-*)
+				;;
+			*)
+				break
+				;;
+			esac
+			(( i++ ))
+		done
+
+		__git_cmd_idx=$(( i - 1 ))
 
 		if (( $+opt_args[--bare] )); then
 			__git_dir='.'
@@ -272,6 +300,7 @@ _git ()
 {
 	local _ret=1
 	local cur cword prev
+	local __git_repo_path
 
 	cur=${words[CURRENT]}
 	prev=${words[CURRENT-1]}

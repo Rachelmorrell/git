@@ -38,4 +38,17 @@ test_expect_success 'info/refs updates when changes are made' '
 	! test_cmp a b
 '
 
+test_expect_success 'midx does not create duplicate pack entries' '
+	git repack -d --write-midx &&
+	git repack -d &&
+	grep ^P .git/objects/info/packs >packs &&
+	uniq -d <packs >dups &&
+	test_must_be_empty dups
+'
+
+test_expect_success 'update-server-info does not crash with -h' '
+	git update-server-info -h >usage &&
+	test_grep "[Uu]sage: git update-server-info " usage
+'
+
 test_done

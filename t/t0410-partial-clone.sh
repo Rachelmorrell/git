@@ -3,9 +3,18 @@
 test_description='partial clone'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-terminal.sh
+
+# When enabled, some commands will write commit-graphs. This causes fsck
+# to fail when delete_object() is called because fsck will attempt to
+# verify the out-of-sync commit graph.
+GIT_TEST_COMMIT_GRAPH=0
 
 delete_object () {
-	rm $1/.git/objects/$(echo $2 | sed -e 's|^..|&/|')
+	local repo="$1"
+	local obj="$2"
+	local path="$repo/.git/objects/$(test_oid_to_path "$obj")" &&
+	rm "$path"
 }
 
 pack_as_from_promisor () {
@@ -42,7 +51,7 @@ test_expect_success 'convert shallow clone to partial clone' '
 	test_cmp_config -C client 1 core.repositoryformatversion
 '
 
-test_expect_success SHA1 'convert to partial clone with noop extension' '
+test_expect_success DEFAULT_REPO_FORMAT 'convert to partial clone with noop extension' '
 	rm -fr server client &&
 	test_create_repo server &&
 	test_commit -C server my_commit 1 &&
@@ -53,7 +62,7 @@ test_expect_success SHA1 'convert to partial clone with noop extension' '
 	git -C client fetch --unshallow --filter="blob:none"
 '
 
-test_expect_success SHA1 'converting to partial clone fails with unrecognized extension' '
+test_expect_success DEFAULT_REPO_FORMAT 'converting to partial clone fails with unrecognized extension' '
 	rm -fr server client &&
 	test_create_repo server &&
 	test_commit -C server my_commit 1 &&
@@ -197,7 +206,7 @@ test_expect_success 'fetching of missing objects' '
 	git -C repo cat-file -p "$HASH" 2>err &&
 
 	# Ensure that no spurious FETCH_HEAD messages are written
-	! grep FETCH_HEAD err &&
+	test_grep ! FETCH_HEAD err &&
 
 	# Ensure that the .promisor file is written, and check that its
 	# associated packfile contains the object
@@ -205,7 +214,21 @@ test_expect_success 'fetching of missing objects' '
 	test_line_count = 1 promisorlist &&
 	IDX=$(sed "s/promisor$/idx/" promisorlist) &&
 	git verify-pack --verbose "$IDX" >out &&
-	grep "$HASH" out
+	test_grep "$HASH" out
+'
+
+test_expect_success 'fetching of a promised object that promisor remote no longer has' '
+	rm -f err &&
+	test_create_repo unreliable-server &&
+	git -C unreliable-server config uploadpack.allowanysha1inwant 1 &&
+	git -C unreliable-server config uploadpack.allowfilter 1 &&
+	test_commit -C unreliable-server foo &&
+
+	git clone --filter=blob:none --no-checkout "file://$(pwd)/unreliable-server" unreliable-client &&
+
+	rm -rf unreliable-server/.git/objects/* &&
+	test_must_fail git -C unreliable-client checkout HEAD 2>err &&
+	test_grep "could not fetch.*from promisor remote" err
 '
 
 test_expect_success 'fetching of missing objects works with ref-in-want enabled' '
@@ -217,10 +240,10 @@ test_expect_success 'fetching of missing objects works with ref-in-want enabled'
 	rm -rf repo/.git/objects/* &&
 	rm -f trace &&
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C repo cat-file -p "$HASH" &&
-	grep "fetch< fetch=.*ref-in-want" trace
+	test_grep "fetch< fetch=.*ref-in-want" trace
 '
 
-test_expect_success 'fetching of missing objects from another promisor remote' '
+test_expect_success 'fetching from another promisor remote' '
 	git clone "file://$(pwd)/server" server2 &&
 	test_commit -C server2 bar &&
 	git -C server2 repack -a -d --write-bitmap-index &&
@@ -240,11 +263,11 @@ test_expect_success 'fetching of missing objects from another promisor remote' '
 	test_line_count = 1 promisorlist &&
 	IDX=$(sed "s/promisor$/idx/" promisorlist) &&
 	git verify-pack --verbose "$IDX" >out &&
-	grep "$HASH2" out
+	test_grep "$HASH2" out
 '
 
-test_expect_success 'fetching of missing objects configures a promisor remote' '
-	git clone "file://$(pwd)/server" server3 &&
+test_expect_success 'fetching with --filter configures a promisor remote' '
+	test_create_repo server3 &&
 	test_commit -C server3 baz &&
 	git -C server3 repack -a -d --write-bitmap-index &&
 	HASH3=$(git -C server3 rev-parse baz) &&
@@ -263,7 +286,7 @@ test_expect_success 'fetching of missing objects configures a promisor remote' '
 	test_line_count = 1 promisorlist &&
 	IDX=$(sed "s/promisor$/idx/" promisorlist) &&
 	git verify-pack --verbose "$IDX" >out &&
-	grep "$HASH3" out
+	test_grep "$HASH3" out
 '
 
 test_expect_success 'fetching of missing blobs works' '
@@ -304,8 +327,8 @@ test_expect_success 'fetching of missing trees does not fetch blobs' '
 
 	# Ensure that the tree, but not the blob, is fetched
 	git -C repo rev-list --objects --missing=print $(cat treehash) >objects &&
-	grep "^$(cat treehash)" objects &&
-	grep "^[?]$(cat blobhash)" objects
+	test_grep "^$(cat treehash)" objects &&
+	test_grep "^[?]$(cat blobhash)" objects
 '
 
 test_expect_success 'rev-list stops traversal at missing and promised commit' '
@@ -319,9 +342,9 @@ test_expect_success 'rev-list stops traversal at missing and promised commit' '
 
 	git -C repo config core.repositoryformatversion 1 &&
 	git -C repo config extensions.partialclone "arbitrary string" &&
-	GIT_TEST_COMMIT_GRAPH=0 git -C repo -c core.commitGraph=false rev-list --exclude-promisor-objects --objects bar >out &&
-	grep $(git -C repo rev-parse bar) out &&
-	! grep $FOO out
+	git -C repo rev-list --exclude-promisor-objects --objects bar >out &&
+	test_grep $(git -C repo rev-parse bar) out &&
+	test_grep ! $FOO out
 '
 
 test_expect_success 'missing tree objects with --missing=allow-promisor and --exclude-promisor-objects' '
@@ -390,10 +413,10 @@ test_expect_success 'rev-list stops traversal at missing and promised tree' '
 	git -C repo config core.repositoryformatversion 1 &&
 	git -C repo config extensions.partialclone "arbitrary string" &&
 	git -C repo rev-list --exclude-promisor-objects --objects HEAD >out &&
-	grep $(git -C repo rev-parse foo) out &&
-	! grep $TREE out &&
-	grep $(git -C repo rev-parse HEAD) out &&
-	! grep $TREE2 out
+	test_grep $(git -C repo rev-parse foo) out &&
+	test_grep ! $TREE out &&
+	test_grep $(git -C repo rev-parse HEAD) out &&
+	test_grep ! $TREE2 out
 '
 
 test_expect_success 'rev-list stops traversal at missing and promised blob' '
@@ -409,8 +432,8 @@ test_expect_success 'rev-list stops traversal at missing and promised blob' '
 	git -C repo config core.repositoryformatversion 1 &&
 	git -C repo config extensions.partialclone "arbitrary string" &&
 	git -C repo rev-list --exclude-promisor-objects --objects HEAD >out &&
-	grep $(git -C repo rev-parse HEAD) out &&
-	! grep $BLOB out
+	test_grep $(git -C repo rev-parse HEAD) out &&
+	test_grep ! $BLOB out
 '
 
 test_expect_success 'rev-list stops traversal at promisor commit, tree, and blob' '
@@ -428,10 +451,10 @@ test_expect_success 'rev-list stops traversal at promisor commit, tree, and blob
 	git -C repo config core.repositoryformatversion 1 &&
 	git -C repo config extensions.partialclone "arbitrary string" &&
 	git -C repo rev-list --exclude-promisor-objects --objects HEAD >out &&
-	! grep $COMMIT out &&
-	! grep $TREE out &&
-	! grep $BLOB out &&
-	grep $(git -C repo rev-parse bar) out  # sanity check that some walking was done
+	test_grep ! $COMMIT out &&
+	test_grep ! $TREE out &&
+	test_grep ! $BLOB out &&
+	test_grep $(git -C repo rev-parse bar) out  # sanity check that some walking was done
 '
 
 test_expect_success 'rev-list dies for missing objects on cmd line' '
@@ -462,8 +485,26 @@ test_expect_success 'rev-list dies for missing objects on cmd line' '
 		git -C repo rev-list --ignore-missing --objects \
 			--exclude-promisor-objects "$OBJ" &&
 		git -C repo rev-list --ignore-missing --objects-edge-aggressive \
-			--exclude-promisor-objects "$OBJ"
+			--exclude-promisor-objects "$OBJ" || return 1
 	done
+'
+
+test_expect_success '--exclude-promisor-objects with ^@ on missing object' '
+	rm -rf repo &&
+	test_create_repo repo &&
+	test_commit -C repo foo &&
+	test_commit -C repo bar &&
+
+	COMMIT=$(git -C repo rev-parse foo) &&
+	promise_and_delete "$COMMIT" &&
+
+	git -C repo config core.repositoryformatversion 1 &&
+	git -C repo config extensions.partialclone "arbitrary string" &&
+
+	# Ensure that "$COMMIT^@" is handled gracefully even though the
+	# actual commits are missing.
+	git -C repo rev-list --exclude-promisor-objects "$COMMIT^@" >out &&
+	test_must_be_empty out
 '
 
 test_expect_success 'single promisor remote can be re-initialized gracefully' '
@@ -500,10 +541,10 @@ test_expect_success 'gc repacks promisor objects separately from non-promisor ob
 	test_line_count = 1 promisorlist &&
 	PROMISOR_PACKFILE=$(sed "s/.promisor/.pack/" <promisorlist) &&
 	git verify-pack $PROMISOR_PACKFILE -v >out &&
-	grep "$TREE_ONE" out &&
-	grep "$TREE_TWO" out &&
-	! grep "$(git -C repo rev-parse one)" out &&
-	! grep "$(git -C repo rev-parse two)" out &&
+	test_grep "$TREE_ONE" out &&
+	test_grep "$TREE_TWO" out &&
+	test_grep ! "$(git -C repo rev-parse one)" out &&
+	test_grep ! "$(git -C repo rev-parse two)" out &&
 
 	# Remove the promisor packfile and associated files
 	rm $(sed "s/.promisor//" <promisorlist).* &&
@@ -513,10 +554,10 @@ test_expect_success 'gc repacks promisor objects separately from non-promisor ob
 	ls repo/.git/objects/pack/pack-*.pack >packlist &&
 	test_line_count = 1 packlist &&
 	git verify-pack repo/.git/objects/pack/pack-*.pack -v >out &&
-	grep "$(git -C repo rev-parse one)" out &&
-	grep "$(git -C repo rev-parse two)" out &&
-	! grep "$TREE_ONE" out &&
-	! grep "$TREE_TWO" out
+	test_grep "$(git -C repo rev-parse one)" out &&
+	test_grep "$(git -C repo rev-parse two)" out &&
+	test_grep ! "$TREE_ONE" out &&
+	test_grep ! "$TREE_TWO" out
 '
 
 test_expect_success 'gc does not repack promisor objects if there are none' '
@@ -536,7 +577,13 @@ test_expect_success 'gc does not repack promisor objects if there are none' '
 repack_and_check () {
 	rm -rf repo2 &&
 	cp -r repo repo2 &&
-	git -C repo2 repack $1 -d &&
+	if test x"$1" = "x--must-fail"
+	then
+		shift
+		test_must_fail git -C repo2 repack $1 -d
+	else
+		git -C repo2 repack $1 -d
+	fi &&
 	git -C repo2 fsck &&
 
 	git -C repo2 cat-file -e $2 &&
@@ -561,6 +608,7 @@ test_expect_success 'repack -d does not irreversibly delete promisor objects' '
 	printf "$THREE\n" | pack_as_from_promisor &&
 	delete_object repo "$ONE" &&
 
+	repack_and_check --must-fail -ab "$TWO" "$THREE" &&
 	repack_and_check -a "$TWO" "$THREE" &&
 	repack_and_check -A "$TWO" "$THREE" &&
 	repack_and_check -l "$TWO" "$THREE"
@@ -579,15 +627,15 @@ test_expect_success 'gc stops traversal when a missing but promised object is re
 	git -C repo gc &&
 
 	# Ensure that the promisor packfile still exists, and remove it
-	test -e repo/.git/objects/pack/pack-$HASH.pack &&
+	test_path_exists repo/.git/objects/pack/pack-$HASH.pack &&
 	rm repo/.git/objects/pack/pack-$HASH.* &&
 
 	# Ensure that the single other pack contains the commit, but not the tree
 	ls repo/.git/objects/pack/pack-*.pack >packlist &&
 	test_line_count = 1 packlist &&
 	git verify-pack repo/.git/objects/pack/pack-*.pack -v >out &&
-	grep "$(git -C repo rev-parse HEAD)" out &&
-	! grep "$TREE_HASH" out
+	test_grep "$(git -C repo rev-parse HEAD)" out &&
+	test_grep ! "$TREE_HASH" out
 '
 
 test_expect_success 'do not fetch when checking existence of tree we construct ourselves' '
@@ -602,6 +650,200 @@ test_expect_success 'do not fetch when checking existence of tree we construct o
 	git -C repo config extensions.partialclone "arbitrary string" &&
 
 	git -C repo cherry-pick side1
+'
+
+test_expect_success 'exact rename does not need to fetch the blob lazily' '
+	rm -rf repo partial.git &&
+	test_create_repo repo &&
+	content="some dummy content" &&
+	test_commit -C repo create-a-file file.txt "$content" &&
+	git -C repo mv file.txt new-file.txt &&
+	git -C repo commit -m rename-the-file &&
+	FILE_HASH=$(git -C repo rev-parse HEAD:new-file.txt) &&
+	test_config -C repo uploadpack.allowfilter 1 &&
+	test_config -C repo uploadpack.allowanysha1inwant 1 &&
+
+	git clone --filter=blob:none --bare "file://$(pwd)/repo" partial.git &&
+	git -C partial.git rev-list --objects --missing=print HEAD >out &&
+	test_grep "[?]$FILE_HASH" out &&
+	git -C partial.git log --follow -- new-file.txt &&
+	git -C partial.git rev-list --objects --missing=print HEAD >out &&
+	test_grep "[?]$FILE_HASH" out
+'
+
+test_expect_success 'lazy-fetch when accessing object not in the_repository' '
+	rm -rf full partial.git &&
+	test_create_repo full &&
+	test_commit -C full create-a-file file.txt &&
+
+	test_config -C full uploadpack.allowfilter 1 &&
+	test_config -C full uploadpack.allowanysha1inwant 1 &&
+	git clone --filter=blob:none --bare "file://$(pwd)/full" partial.git &&
+	FILE_HASH=$(git -C full rev-parse HEAD:file.txt) &&
+
+	# Sanity check that the file is missing
+	git -C partial.git rev-list --objects --missing=print HEAD >out &&
+	test_grep "[?]$FILE_HASH" out &&
+
+	# The no-lazy-fetch mechanism prevents Git from fetching
+	test_must_fail env GIT_NO_LAZY_FETCH=1 \
+		git -C partial.git cat-file -e "$FILE_HASH" &&
+
+	# The same with command line option to "git"
+	test_must_fail git --no-lazy-fetch -C partial.git cat-file -e "$FILE_HASH" &&
+
+	# The same, forcing a subprocess via an alias
+	test_must_fail git --no-lazy-fetch -C partial.git \
+		-c alias.foo="!git cat-file" foo -e "$FILE_HASH" &&
+
+	# Sanity check that the file is still missing
+	git -C partial.git rev-list --objects --missing=print HEAD >out &&
+	test_grep "[?]$FILE_HASH" out &&
+
+	git -C full cat-file -s "$FILE_HASH" >expect &&
+	test-tool partial-clone object-info partial.git "$FILE_HASH" >actual &&
+	test_cmp expect actual &&
+
+	# Sanity check that the file is now present
+	git -C partial.git rev-list --objects --missing=print HEAD >out &&
+	test_grep ! "[?]$FILE_HASH" out
+'
+
+test_expect_success 'lazy-fetch does not recurse infinitely between two promisor remotes' '
+	rm -rf full partial1.git partial2.git &&
+
+	# Create a repo with a blob
+	test_create_repo full &&
+	test_config -C full uploadpack.allowfilter 1 &&
+	test_config -C full uploadpack.allowanysha1inwant 1 &&
+	test_commit -C full create-a-file file.txt &&
+	FILE_HASH=$(git -C full rev-parse HEAD:file.txt) &&
+
+	# Create partial clone repos without blobs
+	git clone --filter=blob:none --bare "file://$(pwd)/full" partial1.git &&
+	git clone --filter=blob:none --bare "file://$(pwd)/full" partial2.git &&
+	test_config -C partial1.git uploadpack.allowfilter 1 &&
+	test_config -C partial1.git uploadpack.allowanysha1inwant 1 &&
+	test_config -C partial2.git uploadpack.allowfilter 1 &&
+	test_config -C partial2.git uploadpack.allowanysha1inwant 1 &&
+
+	# Configure the partial repos as remotes of each other
+	git -C partial2.git remote set-url origin "file://$(pwd)/partial1.git" &&
+	git -C partial1.git remote set-url origin "file://$(pwd)/partial2.git" &&
+
+	# Make sure lazy fetching fails
+	test_must_fail env GIT_TRACE="$(pwd)/trace" GIT_NO_LAZY_FETCH=0 \
+		git -C partial1.git cat-file -e "$FILE_HASH" 2>err &&
+	test_grep "too many nested lazy fetches" err &&
+
+	# Make sure the recursion was bounded, i.e. that only
+	# MAX_LAZY_FETCH_DEPTH "git fetch" subprocesses were spawned
+	grep "run_command: GIT_INTERNAL_LAZY_FETCH_DEPTH" trace >fetches &&
+	test_line_count = 5 fetches
+'
+
+test_expect_success 'push should not fetch new commit objects' '
+	rm -rf server client &&
+	test_create_repo server &&
+	test_config -C server uploadpack.allowfilter 1 &&
+	test_config -C server uploadpack.allowanysha1inwant 1 &&
+	test_commit -C server server1 &&
+
+	git clone --filter=blob:none "file://$(pwd)/server" client &&
+	test_commit -C client client1 &&
+
+	test_commit -C server server2 &&
+	COMMIT=$(git -C server rev-parse server2) &&
+
+	test_must_fail git -C client push 2>err &&
+	test_grep "fetch first" err &&
+	git -C client rev-list --objects --missing=print "$COMMIT" >objects &&
+	test_grep "^[?]$COMMIT" objects
+'
+
+test_expect_success 'setup for promisor.quiet tests' '
+	rm -rf server &&
+	test_create_repo server &&
+	test_commit -C server foo &&
+	git -C server rm foo.t &&
+	git -C server commit -m remove &&
+	git -C server config uploadpack.allowanysha1inwant 1 &&
+	git -C server config uploadpack.allowfilter 1 &&
+
+	# Setup for submodule repo test: superproject whose submodule is a
+	# partial clone, so that promisor.quiet is read via a non-main repo.
+	rm -rf sub-pc-src sub-pc-srv.bare super-src super-work &&
+	git init sub-pc-src &&
+	test_commit -C sub-pc-src initial file.txt "hello" &&
+
+	git clone --bare sub-pc-src sub-pc-srv.bare &&
+	git -C sub-pc-srv.bare config uploadpack.allowfilter 1 &&
+	git -C sub-pc-srv.bare config uploadpack.allowanysha1inwant 1 &&
+
+	git init super-src &&
+	git -C super-src -c protocol.file.allow=always \
+		submodule add "file://$(pwd)/sub-pc-srv.bare" sub &&
+	git -C super-src commit -m "add submodule" &&
+
+	git -c protocol.file.allow=always clone super-src super-work &&
+	git -C super-work -c protocol.file.allow=always \
+		submodule update --init --filter=blob:none sub &&
+
+	# Allow file:// in the submodule so that lazy-fetch subprocesses work.
+	git -C super-work/sub config protocol.file.allow always
+'
+
+test_expect_success TTY 'promisor.quiet=false shows progress messages' '
+	rm -rf repo &&
+	git clone --filter=blob:none "file://$(pwd)/server" repo &&
+	git -C repo config promisor.quiet "false" &&
+
+	test_terminal git -C repo cat-file -p foo:foo.t 2>err &&
+
+	# Ensure that progress messages are written
+	test_grep "Receiving objects" err
+'
+
+test_expect_success TTY 'promisor.quiet=true does not show progress messages' '
+	rm -rf repo &&
+	git clone --filter=blob:none "file://$(pwd)/server" repo &&
+	git -C repo config promisor.quiet "true" &&
+
+	test_terminal git -C repo cat-file -p foo:foo.t 2>err &&
+
+	# Ensure that no progress messages are written
+	test_grep ! "Receiving objects" err
+'
+
+test_expect_success TTY 'promisor.quiet=unconfigured shows progress messages' '
+	rm -rf repo &&
+	git clone --filter=blob:none "file://$(pwd)/server" repo &&
+
+	test_terminal git -C repo cat-file -p foo:foo.t 2>err &&
+
+	# Ensure that progress messages are written
+	test_grep "Receiving objects" err
+'
+
+test_expect_success 'promisor.quiet from submodule repo is honored' '
+	rm -f pc-quiet-trace &&
+
+	# Set promisor.quiet only in the submodule, not the superproject.
+	git -C super-work/sub config promisor.quiet true &&
+
+	# Push a new commit+blob to the server; the blob stays missing in the
+	# partial-clone submodule until a lazy fetch is triggered.
+	test_commit -C sub-pc-src updated new-file.txt "world" &&
+	git -C sub-pc-src push "$(pwd)/sub-pc-srv.bare" HEAD:master &&
+	git -C super-work/sub -c protocol.file.allow=always fetch origin &&
+	git -C super-work/sub reset --mixed origin/master &&
+
+	# grep descends into the submodule and triggers a lazy fetch for the
+	# missing blob; verify the fetch subprocess carries --quiet.
+	GIT_TRACE2_EVENT="$(pwd)/pc-quiet-trace" \
+		git -C super-work grep --cached --recurse-submodules "world" \
+		2>/dev/null &&
+	grep negotiationAlgorithm pc-quiet-trace | grep -e --quiet
 '
 
 . "$TEST_DIRECTORY"/lib-httpd.sh
@@ -628,7 +870,7 @@ test_expect_success 'fetching of missing objects from an HTTP server' '
 	test_line_count = 1 promisorlist &&
 	IDX=$(sed "s/promisor$/idx/" promisorlist) &&
 	git verify-pack --verbose "$IDX" >out &&
-	grep "$HASH" out
+	test_grep "$HASH" out
 '
 
 # DO NOT add non-httpd-specific tests here, because the last part of this

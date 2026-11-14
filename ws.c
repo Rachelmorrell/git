@@ -3,8 +3,15 @@
  *
  * Copyright (c) 2007 Junio C Hamano
  */
-#include "cache.h"
+
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "attr.h"
+#include "strbuf.h"
+#include "ws.h"
+
+unsigned whitespace_rule_cfg = WS_DEFAULT_RULE;
 
 static struct whitespace_rule {
 	const char *rule_name;
@@ -19,6 +26,7 @@ static struct whitespace_rule {
 	{ "blank-at-eol", WS_BLANK_AT_EOL, 0 },
 	{ "blank-at-eof", WS_BLANK_AT_EOF, 0 },
 	{ "tab-in-indent", WS_TAB_IN_INDENT, 0, 1 },
+	{ "incomplete-line", WS_INCOMPLETE_LINE, 0, 0 },
 };
 
 unsigned parse_whitespace_rule(const char *string)
@@ -29,6 +37,7 @@ unsigned parse_whitespace_rule(const char *string)
 		int i;
 		size_t len;
 		const char *ep;
+		const char *arg;
 		int negated = 0;
 
 		string = string + strspn(string, ", \t\n\r");
@@ -52,15 +61,15 @@ unsigned parse_whitespace_rule(const char *string)
 				rule |= whitespace_rule_names[i].rule_bits;
 			break;
 		}
-		if (strncmp(string, "tabwidth=", 9) == 0) {
-			unsigned tabwidth = atoi(string + 9);
+		if (skip_prefix(string, "tabwidth=", &arg)) {
+			unsigned tabwidth = atoi(arg);
 			if (0 < tabwidth && tabwidth < 0100) {
 				rule &= ~WS_TAB_WIDTH_MASK;
 				rule |= tabwidth;
 			}
 			else
 				warning("tabwidth %.*s out of range",
-					(int)(len - 9), string + 9);
+					(int)(ep - arg), arg);
 		}
 		string = ep;
 	}
@@ -131,6 +140,11 @@ char *whitespace_error_string(unsigned ws)
 			strbuf_addstr(&err, ", ");
 		strbuf_addstr(&err, "tab in indent");
 	}
+	if (ws & WS_INCOMPLETE_LINE) {
+		if (err.len)
+			strbuf_addstr(&err, ", ");
+		strbuf_addstr(&err, "no newline at the end of file");
+	}
 	return strbuf_detach(&err, NULL);
 }
 
@@ -171,6 +185,9 @@ static unsigned ws_check_emit_1(const char *line, int len, unsigned ws_rule,
 
 	if (trailing_whitespace == -1)
 		trailing_whitespace = len;
+
+	if (!trailing_newline && (ws_rule & WS_INCOMPLETE_LINE))
+		result |= WS_INCOMPLETE_LINE;
 
 	/* Check indentation */
 	for (i = 0; i < trailing_whitespace; i++) {
@@ -252,7 +269,7 @@ unsigned ws_check(const char *line, int len, unsigned ws_rule)
 	return ws_check_emit_1(line, len, ws_rule, NULL, NULL, NULL, NULL);
 }
 
-int ws_blank_line(const char *line, int len, unsigned ws_rule)
+int ws_blank_line(const char *line, int len)
 {
 	/*
 	 * We _might_ want to treat CR differently from other
@@ -282,6 +299,17 @@ void ws_fix_copy(struct strbuf *dst, const char *src, int len, unsigned ws_rule,
 	int last_tab_in_indent = -1;
 	int last_space_in_indent = -1;
 	int need_fix_leading_space = 0;
+
+	/*
+	 * Remembering that we need to add '\n' at the end
+	 * is sufficient to fix an incomplete line.
+	 */
+	if (ws_rule & WS_INCOMPLETE_LINE) {
+		if (0 < len && src[len - 1] != '\n') {
+			fixed = 1;
+			add_nl_to_tail = 1;
+		}
+	}
 
 	/*
 	 * Strip trailing whitespace

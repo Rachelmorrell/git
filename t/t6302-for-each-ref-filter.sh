@@ -13,7 +13,7 @@ test_expect_success 'setup some history and refs' '
 	git checkout -b side &&
 	test_commit four &&
 	git tag -m "An annotated tag" annotated-tag &&
-	git tag -m "Annonated doubly" doubly-annotated-tag annotated-tag &&
+	git tag -m "Annotated doubly" doubly-annotated-tag annotated-tag &&
 
 	# Note that these "signed" tags might not actually be signed.
 	# Tests which care about the distinction should be marked
@@ -31,6 +31,83 @@ test_expect_success 'setup some history and refs' '
 	git update-ref refs/odd/spot main
 '
 
+test_expect_success '--include-root-refs pattern prints pseudorefs' '
+	cat >expect <<-\EOF &&
+	HEAD
+	ORIG_HEAD
+	refs/heads/main
+	refs/heads/side
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git update-ref ORIG_HEAD main &&
+	git for-each-ref --format="%(refname)" --include-root-refs >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--include-root-refs pattern does not print special refs' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit initial &&
+		git rev-parse HEAD >.git/MERGE_HEAD &&
+		git for-each-ref --format="%(refname)" --include-root-refs >actual &&
+		cat >expect <<-EOF &&
+		HEAD
+		$(git symbolic-ref HEAD)
+		refs/tags/initial
+		EOF
+		test_cmp expect actual
+	)
+'
+
+test_expect_success '--include-root-refs with other patterns' '
+	cat >expect <<-\EOF &&
+	HEAD
+	ORIG_HEAD
+	EOF
+	git update-ref ORIG_HEAD main &&
+	git for-each-ref --format="%(refname)" --include-root-refs "*HEAD" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--include-root-refs omits dangling symrefs' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit initial &&
+		git symbolic-ref DANGLING_HEAD refs/heads/missing &&
+		cat >expect <<-EOF &&
+		HEAD
+		$(git symbolic-ref HEAD)
+		refs/tags/initial
+		EOF
+		git for-each-ref --format="%(refname)" --include-root-refs >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success '--include-root-refs with --merged' '
+	cat >expect <<-\EOF &&
+	HEAD
+	ORIG_HEAD
+	EOF
+	test_when_finished "git update-ref -d ORIG_HEAD" &&
+	git update-ref ORIG_HEAD main &&
+	git for-each-ref --format="%(refname)" --include-root-refs \
+		--merged=main "*HEAD" >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'filtering with --points-at' '
 	cat >expect <<-\EOF &&
 	refs/heads/main
@@ -45,6 +122,8 @@ test_expect_success 'check signed tags with --points-at' '
 	sed -e "s/Z$//" >expect <<-\EOF &&
 	refs/heads/side Z
 	refs/tags/annotated-tag four
+	refs/tags/doubly-annotated-tag four
+	refs/tags/doubly-signed-tag four
 	refs/tags/four Z
 	refs/tags/signed-tag four
 	EOF
@@ -112,6 +191,25 @@ test_expect_success 'filtering with --contains and --no-contains' '
 
 test_expect_success '%(color) must fail' '
 	test_must_fail git for-each-ref --format="%(color)%(refname)"
+'
+
+test_expect_success '%(color:#aa22ac) must succeed' '
+	test_when_finished rm -rf test &&
+	git init test &&
+	(
+		cd test &&
+		test_commit initial &&
+		git branch -M main &&
+		cat >expect <<-\EOF &&
+		refs/heads/main
+		refs/tags/initial
+		EOF
+		git remote add origin nowhere &&
+		git config branch.main.remote origin &&
+		git config branch.main.merge refs/heads/main &&
+		git for-each-ref --format="%(color:#aa22ac)%(refname)" >actual &&
+		test_cmp expect actual
+	)
 '
 
 test_expect_success 'left alignment is default' '
@@ -256,7 +354,7 @@ test_expect_success 'check `%(contents:lines=1)`' '
 	side |four
 	odd/spot |three
 	annotated-tag |An annotated tag
-	doubly-annotated-tag |Annonated doubly
+	doubly-annotated-tag |Annotated doubly
 	doubly-signed-tag |Signed doubly
 	four |four
 	one |one
@@ -292,7 +390,7 @@ test_expect_success 'check `%(contents:lines=99999)`' '
 	side |four
 	odd/spot |three
 	annotated-tag |An annotated tag
-	doubly-annotated-tag |Annonated doubly
+	doubly-annotated-tag |Annotated doubly
 	doubly-signed-tag |Signed doubly
 	four |four
 	one |one
@@ -453,6 +551,284 @@ test_expect_success 'validate worktree atom' '
 	rm -r worktree_dir &&
 	git worktree prune &&
 	test_cmp expect actual
+'
+
+test_expect_success 'start after with empty value' '
+	cat >expect <<-\EOF &&
+	refs/heads/main
+	refs/heads/main_worktree
+	refs/heads/side
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after="" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after a specific reference' '
+	cat >expect <<-\EOF &&
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/spot >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after a specific reference with partial match' '
+	cat >expect <<-\EOF &&
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/sp >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, just behind a specific reference' '
+	cat >expect <<-\EOF &&
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/parrot >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after with specific directory match' '
+	cat >expect <<-\EOF &&
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after with specific directory and trailing slash' '
+	cat >expect <<-\EOF &&
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/ >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, just behind a specific directory' '
+	cat >expect <<-\EOF &&
+	refs/odd/spot
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/lost >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, overflow specific reference length' '
+	cat >expect <<-\EOF &&
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/spotnew >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, overflow specific reference path' '
+	cat >expect <<-\EOF &&
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/spot/new >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, with exclude pattern' '
+	cat >expect <<-\EOF &&
+	refs/tags/annotated-tag
+	refs/tags/doubly-annotated-tag
+	refs/tags/doubly-signed-tag
+	refs/tags/foo1.10
+	refs/tags/foo1.3
+	refs/tags/foo1.6
+	refs/tags/four
+	refs/tags/one
+	refs/tags/signed-tag
+	refs/tags/three
+	refs/tags/two
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/odd/spot \
+		--exclude=refs/tags/foo >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after, last reference' '
+	cat >expect <<-\EOF &&
+	EOF
+	git for-each-ref --format="%(refname)" --start-after=refs/tags/two >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after used with a pattern' '
+	cat >expect <<-\EOF &&
+	fatal: cannot use --start-after with patterns
+	EOF
+	test_must_fail git for-each-ref --format="%(refname)" --start-after=refs/odd/spot refs/tags 2>actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after used with custom sort order' '
+	cat >expect <<-\EOF &&
+	fatal: cannot use --start-after with custom sort options
+	EOF
+	test_must_fail git for-each-ref --format="%(refname)" --start-after=refs/odd/spot --sort=author 2>actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'start after with packed refs' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit default &&
+
+		git update-ref --stdin <<-\EOF &&
+		create refs/heads/branch @
+		create refs/heads/side @
+		create refs/odd/spot @
+		create refs/tags/one @
+		create refs/tags/two @
+		commit
+		EOF
+
+		cat >expect <<-\EOF &&
+		refs/tags/default
+		refs/tags/one
+		refs/tags/two
+		EOF
+
+		git pack-refs --all &&
+		git for-each-ref --format="%(refname)" --start-after=refs/odd/spot >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success 'start after with packed refs and some loose refs' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit default &&
+
+		git update-ref --stdin <<-\EOF &&
+		create refs/heads/branch @
+		create refs/heads/side @
+		create refs/odd/spot @
+		create refs/tags/one @
+		create refs/tags/two @
+		commit
+		EOF
+
+		git pack-refs --all &&
+
+		git update-ref --stdin <<-\EOF &&
+		create refs/heads/foo @
+		create refs/odd/tee @
+		commit
+		EOF
+
+		cat >expect <<-\EOF &&
+		refs/odd/tee
+		refs/tags/default
+		refs/tags/one
+		refs/tags/two
+		EOF
+
+
+		git for-each-ref --format="%(refname)" --start-after=refs/odd/spot >actual &&
+		test_cmp expect actual
+	)
 '
 
 test_done

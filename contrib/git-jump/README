@@ -65,6 +65,9 @@ git jump diff --cached
 # jump to merge conflicts
 git jump merge
 
+# documentation conflicts are hard; skip past them for now
+git jump merge :^Documentation
+
 # jump to all instances of foo_bar
 git jump grep foo_bar
 
@@ -72,10 +75,30 @@ git jump grep foo_bar
 # arbitrary grep options
 git jump grep -i foo_bar
 
+# jump to places with conflict markers or whitespace errors
+# (as reported by `git diff --check`)
+git jump ws
+
 # use the silver searcher for git jump grep
 git config jump.grepCmd "ag --column"
+
+# pick a mode automatically: "merge" if there are unmerged paths,
+# "diff" if the worktree has unstaged changes, "ws" if there are
+# whitespace problems; otherwise show usage
+git jump auto
+
+# with no explicit mode and no args, same as "auto"
+git jump
 --------------------------------------------------
 
+You can use the optional argument '--stdout' to print the listing to
+standard output instead of feeding it to the editor. You can use the
+argument with M-x grep on Emacs:
+
+--------------------------------------------------
+# In Emacs, M-x grep and invoke "git jump --stdout <mode>"
+M-x grep<RET>git jump --stdout diff<RET>
+--------------------------------------------------
 
 Related Programs
 ----------------
@@ -97,7 +120,7 @@ Limitations
 -----------
 
 This script was written and tested with vim. Given that the quickfix
-format is the same as what gcc produces, I expect emacs users have a
+format is the same as what gcc produces, I expect other tools have a
 similar feature for iterating through the list, but I know nothing about
 how to activate it.
 

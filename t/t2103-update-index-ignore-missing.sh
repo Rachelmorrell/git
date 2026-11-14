@@ -23,7 +23,7 @@ test_expect_success basics '
 	test_cmp expect actual &&
 
 	git update-index --add one two three &&
-	for i in one three two; do echo $i; done >expect &&
+	test_write_lines one three two >expect &&
 	git ls-files >actual &&
 	test_cmp expect actual &&
 
@@ -63,9 +63,9 @@ test_expect_success '--unmerged --refresh' '
 	git update-index --unmerged --refresh &&
 	echo 2 >two &&
 	test_must_fail git update-index --unmerged --refresh >actual &&
-	grep two actual &&
-	! grep one actual &&
-	! grep three actual
+	test_grep two actual &&
+	test_grep ! one actual &&
+	test_grep ! three actual
 '
 
 test_expect_success '--ignore-submodules --refresh (1)' '

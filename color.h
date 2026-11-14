@@ -6,6 +6,7 @@ struct strbuf;
 /*
  * The maximum length of ANSI color sequence we would generate:
  * - leading ESC '['            2
+ * - reset ';' .................1
  * - attr + ';'                 2 * num_attr (e.g. "1;")
  * - no-attr + ';'              3 * num_attr (e.g. "22;")
  * - fg color + ';'             17 (e.g. "38;2;255;255;255;")
@@ -24,30 +25,42 @@ struct strbuf;
 #define GIT_COLOR_NORMAL	""
 #define GIT_COLOR_RESET		"\033[m"
 #define GIT_COLOR_BOLD		"\033[1m"
+#define GIT_COLOR_BLACK		"\033[30m"
 #define GIT_COLOR_RED		"\033[31m"
 #define GIT_COLOR_GREEN		"\033[32m"
 #define GIT_COLOR_YELLOW	"\033[33m"
 #define GIT_COLOR_BLUE		"\033[34m"
 #define GIT_COLOR_MAGENTA	"\033[35m"
 #define GIT_COLOR_CYAN		"\033[36m"
+#define GIT_COLOR_WHITE		"\033[37m"
+#define GIT_COLOR_DEFAULT	"\033[39m"
+#define GIT_COLOR_BOLD_BLACK	"\033[1;30m"
 #define GIT_COLOR_BOLD_RED	"\033[1;31m"
 #define GIT_COLOR_BOLD_GREEN	"\033[1;32m"
 #define GIT_COLOR_BOLD_YELLOW	"\033[1;33m"
 #define GIT_COLOR_BOLD_BLUE	"\033[1;34m"
 #define GIT_COLOR_BOLD_MAGENTA	"\033[1;35m"
 #define GIT_COLOR_BOLD_CYAN	"\033[1;36m"
+#define GIT_COLOR_BOLD_WHITE	"\033[1;37m"
+#define GIT_COLOR_BOLD_DEFAULT	"\033[1;39m"
+#define GIT_COLOR_FAINT_BLACK	"\033[2;30m"
 #define GIT_COLOR_FAINT_RED	"\033[2;31m"
 #define GIT_COLOR_FAINT_GREEN	"\033[2;32m"
 #define GIT_COLOR_FAINT_YELLOW	"\033[2;33m"
 #define GIT_COLOR_FAINT_BLUE	"\033[2;34m"
 #define GIT_COLOR_FAINT_MAGENTA	"\033[2;35m"
 #define GIT_COLOR_FAINT_CYAN	"\033[2;36m"
+#define GIT_COLOR_FAINT_WHITE	"\033[2;37m"
+#define GIT_COLOR_FAINT_DEFAULT	"\033[2;39m"
+#define GIT_COLOR_BG_BLACK	"\033[40m"
 #define GIT_COLOR_BG_RED	"\033[41m"
 #define GIT_COLOR_BG_GREEN	"\033[42m"
 #define GIT_COLOR_BG_YELLOW	"\033[43m"
 #define GIT_COLOR_BG_BLUE	"\033[44m"
 #define GIT_COLOR_BG_MAGENTA	"\033[45m"
 #define GIT_COLOR_BG_CYAN	"\033[46m"
+#define GIT_COLOR_BG_WHITE	"\033[47m"
+#define GIT_COLOR_BG_DEFAULT	"\033[49m"
 #define GIT_COLOR_FAINT		"\033[2m"
 #define GIT_COLOR_FAINT_ITALIC	"\033[2;3m"
 #define GIT_COLOR_REVERSE	"\033[7m"
@@ -60,10 +73,12 @@ struct strbuf;
  * returned from git_config_colorbool. The "auto" value can be returned from
  * config_colorbool, and will be converted by want_color() into either 0 or 1.
  */
-#define GIT_COLOR_UNKNOWN -1
-#define GIT_COLOR_NEVER  0
-#define GIT_COLOR_ALWAYS 1
-#define GIT_COLOR_AUTO   2
+enum git_colorbool {
+	GIT_COLOR_UNKNOWN = -1,
+	GIT_COLOR_NEVER = 0,
+	GIT_COLOR_ALWAYS = 1,
+	GIT_COLOR_AUTO = 2,
+};
 
 /* A default list of colors to use for commit graphs and show-branch output */
 extern const char *column_colors_ansi[];
@@ -75,12 +90,8 @@ extern const int column_colors_ansi_max;
  */
 extern int color_stdout_is_tty;
 
-/*
- * Use the first one if you need only color config; the second is a convenience
- * if you are just going to change to git_default_config, too.
- */
+/* Parse color config. */
 int git_color_config(const char *var, const char *value, void *cb);
-int git_color_default_config(const char *var, const char *value, void *cb);
 
 /*
  * Parse a config option, which can be a boolean or one of
@@ -89,13 +100,13 @@ int git_color_default_config(const char *var, const char *value, void *cb);
  * GIT_COLOR_ALWAYS for "always" or a positive boolean,
  * and GIT_COLOR_AUTO for "auto".
  */
-int git_config_colorbool(const char *var, const char *value);
+enum git_colorbool git_config_colorbool(const char *var, const char *value);
 
 /*
  * Return a boolean whether to use color, where the argument 'var' is
  * one of GIT_COLOR_UNKNOWN, GIT_COLOR_NEVER, GIT_COLOR_ALWAYS, GIT_COLOR_AUTO.
  */
-int want_color_fd(int fd, int var);
+bool want_color_fd(int fd, enum git_colorbool var);
 #define want_color(colorbool) want_color_fd(1, (colorbool))
 #define want_color_stderr(colorbool) want_color_fd(2, (colorbool))
 
@@ -103,9 +114,11 @@ int want_color_fd(int fd, int var);
  * Translate a Git color from 'value' into a string that the terminal can
  * interpret and store it into 'dst'. The Git color values are of the form
  * "foreground [background] [attr]" where fore- and background can be a color
- * name ("red"), a RGB code (#0xFF0000) or a 256-color-mode from the terminal.
+ * name ("red"), a RGB code (#FF0000 or #F00) or a 256-color-mode from the
+ * terminal.
  */
 int color_parse(const char *value, char *dst);
+int color_parse_quietly(const char *value, char *dst);
 int color_parse_mem(const char *value, int len, char *dst);
 
 /*

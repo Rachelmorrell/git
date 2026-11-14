@@ -3,11 +3,13 @@
 test_description="recursive merge corner cases w/ renames but not criss-crosses"
 # t6036 has corner cases that involve both criss-cross merges and renames
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-merge.sh
 
 test_setup_rename_delete_untracked () {
-	test_create_repo rename-delete-untracked &&
+	git init rename-delete-untracked &&
 	(
 		cd rename-delete-untracked &&
 
@@ -52,7 +54,7 @@ test_expect_success "Does git preserve Gollum's precious artifact?" '
 # We should be able to merge B & C cleanly
 
 test_setup_rename_modify_add_source () {
-	test_create_repo rename-modify-add-source &&
+	git init rename-modify-add-source &&
 	(
 		cd rename-modify-add-source &&
 
@@ -92,7 +94,7 @@ test_expect_failure 'rename/modify/add-source conflict resolvable' '
 '
 
 test_setup_break_detection_1 () {
-	test_create_repo break-detection-1 &&
+	git init break-detection-1 &&
 	(
 		cd break-detection-1 &&
 
@@ -140,7 +142,7 @@ test_expect_failure 'conflict caused if rename not detected' '
 '
 
 test_setup_break_detection_2 () {
-	test_create_repo break-detection-2 &&
+	git init break-detection-2 &&
 	(
 		cd break-detection-2 &&
 
@@ -188,7 +190,7 @@ test_expect_failure 'missed conflict if rename not detected' '
 #   Commit C: rename a->b, add unrelated a
 
 test_setup_break_detection_3 () {
-	test_create_repo break-detection-3 &&
+	git init break-detection-3 &&
 	(
 		cd break-detection-3 &&
 
@@ -264,7 +266,7 @@ test_expect_failure 'detect rename/add-source and preserve all data, merge other
 '
 
 test_setup_rename_directory () {
-	test_create_repo rename-directory-$1 &&
+	git init rename-directory-$1 &&
 	(
 		cd rename-directory-$1 &&
 
@@ -313,12 +315,7 @@ test_expect_success 'rename/directory conflict + clean content merge' '
 		git ls-files -u >out &&
 		test_line_count = 1 out &&
 		git ls-files -o >out &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_line_count = 1 out
-		else
-			test_line_count = 2 out
-		fi &&
+		test_line_count = 1 out &&
 
 		echo 0 >expect &&
 		git cat-file -p base:file >>expect &&
@@ -347,12 +344,7 @@ test_expect_success 'rename/directory conflict + content merge conflict' '
 		git ls-files -u >out &&
 		test_line_count = 3 out &&
 		git ls-files -o >out &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			test_line_count = 1 out
-		else
-			test_line_count = 2 out
-		fi &&
+		test_line_count = 1 out &&
 
 		git cat-file -p left-conflict:newfile >left &&
 		git cat-file -p base:file    >base &&
@@ -366,14 +358,8 @@ test_expect_success 'rename/directory conflict + content merge conflict' '
 
 		git rev-parse >expect   \
 			base:file       left-conflict:newfile right:file &&
-		if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-		then
-			git rev-parse >actual \
-				:1:newfile~HEAD :2:newfile~HEAD :3:newfile~HEAD
-		else
-			git rev-parse >actual \
-				:1:newfile      :2:newfile      :3:newfile
-		fi &&
+		git rev-parse >actual \
+			:1:newfile~HEAD :2:newfile~HEAD :3:newfile~HEAD &&
 		test_cmp expect actual &&
 
 		test_path_is_file newfile/realfile &&
@@ -382,7 +368,7 @@ test_expect_success 'rename/directory conflict + content merge conflict' '
 '
 
 test_setup_rename_directory_2 () {
-	test_create_repo rename-directory-2 &&
+	git init rename-directory-2 &&
 	(
 		cd rename-directory-2 &&
 
@@ -441,7 +427,7 @@ test_expect_success 'disappearing dir in rename/directory conflict handled' '
 #   Commit B: modify a, add different b
 
 test_setup_rename_with_content_merge_and_add () {
-	test_create_repo rename-with-content-merge-and-add-$1 &&
+	git init rename-with-content-merge-and-add-$1 &&
 	(
 		cd rename-with-content-merge-and-add-$1 &&
 
@@ -472,7 +458,7 @@ test_expect_success 'handle rename-with-content-merge vs. add' '
 		git checkout A^0 &&
 
 		test_must_fail git merge -s recursive B^0 >out &&
-		test_i18ngrep "CONFLICT (.*/add)" out &&
+		test_grep "CONFLICT (.*/add)" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 2 out &&
@@ -518,7 +504,7 @@ test_expect_success 'handle rename-with-content-merge vs. add, merge other way' 
 		git checkout B^0 &&
 
 		test_must_fail git merge -s recursive A^0 >out &&
-		test_i18ngrep "CONFLICT (.*/add)" out &&
+		test_grep "CONFLICT (.*/add)" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 2 out &&
@@ -566,7 +552,7 @@ test_expect_success 'handle rename-with-content-merge vs. add, merge other way' 
 #   * Nothing else should be present.  Is anything?
 
 test_setup_rename_rename_2to1 () {
-	test_create_repo rename-rename-2to1 &&
+	git init rename-rename-2to1 &&
 	(
 		cd rename-rename-2to1 &&
 
@@ -598,7 +584,7 @@ test_expect_success 'handle rename/rename (2to1) conflict correctly' '
 		git checkout B^0 &&
 
 		test_must_fail git merge -s recursive C^0 >out &&
-		test_i18ngrep "CONFLICT (\(.*\)/\1)" out &&
+		test_grep "CONFLICT (\(.*\)/\1)" out &&
 
 		git ls-files -s >out &&
 		test_line_count = 2 out &&
@@ -638,7 +624,7 @@ test_expect_success 'handle rename/rename (2to1) conflict correctly' '
 #   Commit B: rename a->b
 #   Commit C: rename a->c
 test_setup_rename_rename_1to2 () {
-	test_create_repo rename-rename-1to2 &&
+	git init rename-rename-1to2 &&
 	(
 		cd rename-rename-1to2 &&
 
@@ -696,7 +682,7 @@ test_expect_success 'merge has correct working tree contents' '
 # Merging of B & C should NOT be clean; there's a rename/rename conflict
 
 test_setup_rename_rename_1to2_add_source_1 () {
-	test_create_repo rename-rename-1to2-add-source-1 &&
+	git init rename-rename-1to2-add-source-1 &&
 	(
 		cd rename-rename-1to2-add-source-1 &&
 
@@ -744,7 +730,7 @@ test_expect_failure 'detect conflict with rename/rename(1to2)/add-source merge' 
 '
 
 test_setup_rename_rename_1to2_add_source_2 () {
-	test_create_repo rename-rename-1to2-add-source-2 &&
+	git init rename-rename-1to2-add-source-2 &&
 	(
 		cd rename-rename-1to2-add-source-2 &&
 
@@ -790,7 +776,7 @@ test_expect_failure 'rename/rename/add-source still tracks new a file' '
 '
 
 test_setup_rename_rename_1to2_add_dest () {
-	test_create_repo rename-rename-1to2-add-dest &&
+	git init rename-rename-1to2-add-dest &&
 	(
 		cd rename-rename-1to2-add-dest &&
 
@@ -870,7 +856,7 @@ test_expect_success 'rename/rename/add-dest merge still knows about conflicting 
 #   Expected: CONFLICT (rename/add/delete), two-way merged bar
 
 test_setup_rad () {
-	test_create_repo rad &&
+	git init rad &&
 	(
 		cd rad &&
 		echo "original file" >foo &&
@@ -893,7 +879,7 @@ test_setup_rad () {
 	)
 }
 
-test_expect_merge_algorithm failure success 'rad-check: rename/add/delete conflict' '
+test_expect_success 'rad-check: rename/add/delete conflict' '
 	test_setup_rad &&
 	(
 		cd rad &&
@@ -910,8 +896,8 @@ test_expect_merge_algorithm failure success 'rad-check: rename/add/delete confli
 		# be flexible in the type of console output message(s) reported
 		# for this particular case; we will be more stringent about the
 		# contents of the index and working directory.
-		test_i18ngrep "CONFLICT (.*/add)" out &&
-		test_i18ngrep "CONFLICT (rename.*/delete)" out &&
+		test_grep "CONFLICT (.*/add)" out &&
+		test_grep "CONFLICT (rename.*/delete)" out &&
 		test_must_be_empty err &&
 
 		git ls-files -s >file_count &&
@@ -930,8 +916,8 @@ test_expect_merge_algorithm failure success 'rad-check: rename/add/delete confli
 		# bar should have two-way merged contents of the different
 		# versions of bar; check that content from both sides is
 		# present.
-		grep original bar &&
-		grep different bar
+		test_grep original bar &&
+		test_grep different bar
 	)
 '
 
@@ -942,7 +928,7 @@ test_expect_merge_algorithm failure success 'rad-check: rename/add/delete confli
 #   Expected: CONFLICT (rename/rename/delete/delete), two-way merged baz
 
 test_setup_rrdd () {
-	test_create_repo rrdd &&
+	git init rrdd &&
 	(
 		cd rrdd &&
 		echo foo >foo &&
@@ -966,7 +952,7 @@ test_setup_rrdd () {
 	)
 }
 
-test_expect_merge_algorithm failure success 'rrdd-check: rename/rename(2to1)/delete/delete conflict' '
+test_expect_success 'rrdd-check: rename/rename(2to1)/delete/delete conflict' '
 	test_setup_rrdd &&
 	(
 		cd rrdd &&
@@ -984,8 +970,8 @@ test_expect_merge_algorithm failure success 'rrdd-check: rename/rename(2to1)/del
 		# be flexible in the type of console output message(s) reported
 		# for this particular case; we will be more stringent about the
 		# contents of the index and working directory.
-		test_i18ngrep "CONFLICT (\(.*\)/\1)" out &&
-		test_i18ngrep "CONFLICT (rename.*delete)" out &&
+		test_grep "CONFLICT (\(.*\)/\1)" out &&
+		test_grep "CONFLICT (rename.*delete)" out &&
 		test_must_be_empty err &&
 
 		git ls-files -s >file_count &&
@@ -1005,8 +991,8 @@ test_expect_merge_algorithm failure success 'rrdd-check: rename/rename(2to1)/del
 		# baz should have two-way merged contents of the original
 		# contents of foo and bar; check that content from both sides
 		# is present.
-		grep foo baz &&
-		grep bar baz
+		test_grep foo baz &&
+		test_grep bar baz
 	)
 '
 
@@ -1018,7 +1004,7 @@ test_expect_merge_algorithm failure success 'rrdd-check: rename/rename(2to1)/del
 #             multi-way merged contents found in two, four, six
 
 test_setup_mod6 () {
-	test_create_repo mod6 &&
+	git init mod6 &&
 	(
 		cd mod6 &&
 		test_seq 11 19 >one &&
@@ -1055,7 +1041,7 @@ test_setup_mod6 () {
 	)
 }
 
-test_expect_merge_algorithm failure success 'mod6-check: chains of rename/rename(1to2) and rename/rename(2to1)' '
+test_expect_success 'mod6-check: chains of rename/rename(1to2) and rename/rename(2to1)' '
 	test_setup_mod6 &&
 	(
 		cd mod6 &&
@@ -1064,7 +1050,7 @@ test_expect_merge_algorithm failure success 'mod6-check: chains of rename/rename
 
 		test_must_fail git merge -s recursive B^0 >out 2>err &&
 
-		test_i18ngrep "CONFLICT (rename/rename)" out &&
+		test_grep "CONFLICT (rename/rename)" out &&
 		test_must_be_empty err &&
 
 		git ls-files -s >file_count &&
@@ -1130,7 +1116,7 @@ test_conflicts_with_adds_and_renames() {
 	# Setup:
 	#          L
 	#         / \
-	#   master   ?
+	#     main   ?
 	#         \ /
 	#          R
 	#
@@ -1155,16 +1141,12 @@ test_conflicts_with_adds_and_renames() {
 	#   4) There should not be any three~* files in the working
 	#      tree
 	test_setup_collision_conflict () {
-	#test_expect_success "setup simple $sideL/$sideR conflict" '
-		test_create_repo simple_${sideL}_${sideR} &&
+		git init simple_${sideL}_${sideR} &&
 		(
 			cd simple_${sideL}_${sideR} &&
 
 			# Create some related files now
-			for i in $(test_seq 1 10)
-			do
-				echo Random base content line $i
-			done >file_v1 &&
+			test_seq -f "Random base content line %d" 1 10 >file_v1 &&
 			cp file_v1 file_v2 &&
 			echo modification >>file_v2 &&
 
@@ -1232,7 +1214,6 @@ test_conflicts_with_adds_and_renames() {
 			fi &&
 			test_tick && git commit -m R
 		)
-	#'
 	}
 
 	test_expect_success "check simple $sideL/$sideR conflict" '
@@ -1260,7 +1241,7 @@ test_conflicts_with_adds_and_renames() {
 				:2:three           \
 				:3:three           &&
 			git rev-parse >expected        \
-				master:irrelevant_file \
+				main:irrelevant_file \
 				file_v2                \
 				file_v4                &&
 			test_cmp expected actual &&
@@ -1290,12 +1271,12 @@ test_conflicts_with_adds_and_renames add    add
 # Setup:
 #          L
 #         / \
-#   master   ?
+#     main   ?
 #         \ /
 #          R
 #
 # Where:
-#   master has two files, named 'one' and 'two'.
+#   main has two files, named 'one' and 'two'.
 #   branches L and R both modify 'one', in conflicting ways.
 #   branches L and R both modify 'two', in conflicting ways.
 #   branch L also renames 'one' to 'three'.
@@ -1304,15 +1285,12 @@ test_conflicts_with_adds_and_renames add    add
 #   So, we have four different conflicting files that all end up at path
 #   'three'.
 test_setup_nested_conflicts_from_rename_rename () {
-	test_create_repo nested_conflicts_from_rename_rename &&
+	git init nested_conflicts_from_rename_rename &&
 	(
 		cd nested_conflicts_from_rename_rename &&
 
 		# Create some related files now
-		for i in $(test_seq 1 10)
-		do
-			echo Random base content line $i
-		done >file_v1 &&
+		test_seq -f "Random base content line %d" 1 10 >file_v1 &&
 
 		cp file_v1 file_v2 &&
 		cp file_v1 file_v3 &&
@@ -1376,7 +1354,7 @@ test_expect_success 'check nested conflicts from rename/rename(2to1)' '
 		test_line_count = 1 out &&
 
 		# Compare :2:three to expected values
-		git cat-file -p master:one >base &&
+		git cat-file -p main:one >base &&
 		git cat-file -p L:three >ours &&
 		git cat-file -p R:one >theirs &&
 		test_must_fail git merge-file    \
@@ -1387,7 +1365,7 @@ test_expect_success 'check nested conflicts from rename/rename(2to1)' '
 		test_cmp expect L-three &&
 
 		# Compare :2:three to expected values
-		git cat-file -p master:two >base &&
+		git cat-file -p main:two >base &&
 		git cat-file -p L:two >ours &&
 		git cat-file -p R:three >theirs &&
 		test_must_fail git merge-file    \
@@ -1413,7 +1391,7 @@ test_expect_success 'check nested conflicts from rename/rename(2to1)' '
 #   Expected: CONFLICT(rename/rename) message, three unstaged entries in the
 #             index, and contents of orig-[AB] at path orig-[AB]
 test_setup_rename_rename_1_to_2_binary () {
-	test_create_repo rename_rename_1_to_2_binary &&
+	git init rename_rename_1_to_2_binary &&
 	(
 		cd rename_rename_1_to_2_binary &&
 
@@ -1458,6 +1436,146 @@ test_expect_success 'rename/rename(1to2) with a binary file' '
 		git rev-parse A:orig-A B:orig-B >expect &&
 		git hash-object orig-A orig-B >actual &&
 		test_cmp expect actual
+	)
+'
+
+# Testcase preliminary submodule/directory conflict and submodule rename
+#   Commit O: <empty, or additional irrelevant stuff>
+#   Commit A1: introduce "folder" (as a tree)
+#   Commit B1: introduce "folder" (as a submodule)
+#   Commit A2: merge B1 into A1, but keep folder as a tree
+#   Commit B2: merge A1 into B1, but keep folder as a submodule
+#   Merge A2 & B2
+test_setup_submodule_directory_preliminary_conflict () {
+	git init submodule_directory_preliminary_conflict &&
+	(
+		cd submodule_directory_preliminary_conflict &&
+
+		# Trying to do the A2 and B2 merges above is slightly more
+		# challenging with a local submodule (because checking out
+		# another commit has the submodule in the way).  Instead,
+		# first create the commits with the wrong parents but right
+		# trees, in the order A1, A2, B1, B2...
+		#
+		# Then go back and create new A2 & B2 with the correct
+		# parents and the same trees.
+
+		git commit --allow-empty -m orig &&
+
+		git branch A &&
+		git branch B &&
+
+		git checkout B &&
+		mkdir folder &&
+		echo A>folder/A &&
+		echo B>folder/B &&
+		echo C>folder/C &&
+		echo D>folder/D &&
+		echo E>folder/E &&
+		git add folder &&
+		git commit -m B1 &&
+
+		git commit --allow-empty -m B2 &&
+
+		git checkout A &&
+		git init folder &&
+		(
+			cd folder &&
+			>Z &&
+			>Y &&
+			git add Z Y &&
+			git commit -m "original submodule commit"
+		) &&
+		git add folder &&
+		git commit -m A1 &&
+
+		git commit --allow-empty -m A2 &&
+
+		NewA2=$(git commit-tree -p A^ -p B^ -m "Merge B into A" A^{tree}) &&
+		NewB2=$(git commit-tree -p B^ -p A^ -m "Merge A into B" B^{tree}) &&
+		git update-ref refs/heads/A $NewA2 &&
+		git update-ref refs/heads/B $NewB2
+	)
+}
+
+test_expect_success 'submodule/directory preliminary conflict' '
+	test_setup_submodule_directory_preliminary_conflict &&
+	(
+		cd submodule_directory_preliminary_conflict &&
+
+		git checkout A^0 &&
+
+		test_expect_code 1 git merge B^0 &&
+
+		# Make sure the index has the right number of entries
+		git ls-files -s >actual &&
+		test_line_count = 2 actual &&
+
+		# The "folder" as directory should have been resolved away
+		# as part of the merge.  The "folder" as submodule got
+		# renamed to "folder~Temporary merge branch 2" in the
+		# virtual merge base, resulting in a
+		#    "folder~Temporary merge branch 2" -> "folder"
+		# rename in the outermerge for the submodule, which then
+		# becomes part of a rename/delete conflict (because "folder"
+		# as a submodule was deleted in A2).
+		submod=$(git rev-parse A:folder) &&
+		printf "160000 $submod 1\tfolder\n160000 $submod 2\tfolder\n" >expect &&
+		test_cmp expect actual
+	)
+'
+
+# Testcase: submodule/directory conflict with duplicate tree entries
+#   One side has a path as a gitlink (submodule).  The other side replaces
+#   the gitlink with a directory.  A third-party tool creates a tree on the
+#   submodule side that has *both* a gitlink and a tree entry for the same
+#   path (adding a file inside the submodule path ignoring that there's a
+#   gitlink there).  collect_merge_info_callback() should detect the
+#   duplicate and abort rather than silently corrupting its bookkeeping.
+
+test_expect_success 'duplicate tree entries trigger an error' '
+	test_when_finished "rm -rf duplicate-entry" &&
+	git init duplicate-entry &&
+	(
+		cd duplicate-entry &&
+
+		# Base commit: "docs" is a gitlink (submodule)
+		empty_tree=$(git mktree </dev/null) &&
+		fake_commit=$(git commit-tree $empty_tree </dev/null) &&
+		git update-index --add --cacheinfo 160000,$fake_commit,docs &&
+		echo base >file.txt &&
+		git add file.txt &&
+		git commit -m base &&
+
+		# side1: remove the gitlink, replace with a directory
+		git checkout -b side1 &&
+		git rm --cached docs &&
+		mkdir -p docs &&
+		echo hello >docs/requirements.txt &&
+		git add docs/requirements.txt &&
+		git commit -m "side1: submodule to directory" &&
+
+		# side2: keep the gitlink but craft a tree that also
+		# contains a tree entry for "docs" (simulating a tool
+		# that adds files inside a submodule path without
+		# removing the gitlink first).
+		git checkout main &&
+		git checkout -b side2 &&
+		blob_oid=$(echo world | git hash-object -w --stdin) &&
+		docs_tree=$(printf "100644 blob %s\trequirements.txt\n" \
+			"$blob_oid" | git mktree) &&
+		cur_tree=$(git rev-parse HEAD^{tree}) &&
+		git cat-file -p $cur_tree >tree-listing &&
+		printf "040000 tree %s\tdocs\n" "$docs_tree" >>tree-listing &&
+		new_tree=$(git mktree <tree-listing) &&
+		side2_commit=$(git commit-tree $new_tree -p HEAD \
+			-m "side2: add file alongside submodule") &&
+		git update-ref refs/heads/side2 $side2_commit &&
+
+		# Merging must detect the duplicate and abort
+		git checkout side1 &&
+		test_must_fail git merge side2 2>err &&
+		test_grep "duplicate entries" err
 	)
 '
 

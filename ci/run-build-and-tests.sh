@@ -5,41 +5,27 @@
 
 . ${0%/*}/lib.sh
 
-case "$CI_OS_NAME" in
-windows*) cmd //c mklink //j t\\.prove "$(cygpath -aw "$cache_dir/.prove")";;
-*) ln -s "$cache_dir/.prove" t/.prove;;
-esac
-
-make
 case "$jobname" in
-linux-gcc)
-	make test
-	export GIT_TEST_SPLIT_INDEX=yes
-	export GIT_TEST_FULL_IN_PACK_ARRAY=true
-	export GIT_TEST_OE_SIZE=10
-	export GIT_TEST_OE_DELTA_SIZE=5
-	export GIT_TEST_COMMIT_GRAPH=1
-	export GIT_TEST_COMMIT_GRAPH_CHANGED_PATHS=1
-	export GIT_TEST_MULTI_PACK_INDEX=1
-	export GIT_TEST_ADD_I_USE_BUILTIN=1
-	make test
-	;;
-linux-clang)
-	export GIT_TEST_DEFAULT_HASH=sha1
-	make test
-	export GIT_TEST_DEFAULT_HASH=sha256
-	make test
-	;;
-linux-gcc-4.8)
-	# Don't run the tests; we only care about whether Git can be
-	# built with GCC 4.8, as it errors out on some undesired (C99)
-	# constructs that newer compilers seem to quietly accept.
+*-meson)
+	group "Configure" meson setup build . \
+		--fatal-meson-warnings \
+		--warnlevel 2 --werror \
+		--wrap-mode nofallback \
+		-Dfuzzers=true \
+		-Dtest_output_directory="${TEST_OUTPUT_DIRECTORY:-$(pwd)/t}" \
+		$MESONFLAGS
+	group "Build" meson compile -C build --
+	group "Run tests" meson test -C build --print-errorlogs --test-args="$GIT_TEST_OPTS" || (
+		./t/aggregate-results.sh "${TEST_OUTPUT_DIRECTORY:-t}/test-results"
+		handle_failed_tests
+	)
 	;;
 *)
-	make test
+	group Build make
+	group "Run tests" make test ||
+	handle_failed_tests
 	;;
 esac
 
 check_unignored_build_artifacts
-
 save_good_tree

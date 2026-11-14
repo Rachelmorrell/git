@@ -1,15 +1,16 @@
 #!/bin/sh
 
 test_description='show-ref'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success setup '
-	test_commit A &&
-	git tag -f -a -m "annotated A" A &&
+	test_commit --annotate A &&
 	git checkout -b side &&
-	test_commit B &&
-	git tag -f -a -m "annotated B" B &&
-	git checkout master &&
+	test_commit --annotate B &&
+	git checkout main &&
 	test_commit C &&
 	git branch B A^0
 '
@@ -77,7 +78,7 @@ test_expect_success 'show-ref --verify -q' '
 test_expect_success 'show-ref -d' '
 	{
 		echo $(git rev-parse refs/tags/A) refs/tags/A &&
-		echo $(git rev-parse refs/tags/A^0) "refs/tags/A^{}"
+		echo $(git rev-parse refs/tags/A^0) "refs/tags/A^{}" &&
 		echo $(git rev-parse refs/tags/C) refs/tags/C
 	} >expect &&
 	git show-ref -d A C >actual &&
@@ -92,23 +93,23 @@ test_expect_success 'show-ref -d' '
 	git show-ref --verify -d refs/tags/A refs/tags/C >actual &&
 	test_cmp expect actual &&
 
-	echo $(git rev-parse refs/heads/master) refs/heads/master >expect &&
-	git show-ref -d master >actual &&
+	echo $(git rev-parse refs/heads/main) refs/heads/main >expect &&
+	git show-ref -d main >actual &&
 	test_cmp expect actual &&
 
-	git show-ref -d heads/master >actual &&
+	git show-ref -d heads/main >actual &&
 	test_cmp expect actual &&
 
-	git show-ref -d refs/heads/master >actual &&
+	git show-ref -d refs/heads/main >actual &&
 	test_cmp expect actual &&
 
-	git show-ref -d --verify refs/heads/master >actual &&
+	git show-ref -d --verify refs/heads/main >actual &&
 	test_cmp expect actual &&
 
-	test_must_fail git show-ref -d --verify master >actual &&
+	test_must_fail git show-ref -d --verify main >actual &&
 	test_must_be_empty actual &&
 
-	test_must_fail git show-ref -d --verify heads/master >actual &&
+	test_must_fail git show-ref -d --verify heads/main >actual &&
 	test_must_be_empty actual &&
 
 	test_must_fail git show-ref --verify -d A C >actual &&
@@ -119,35 +120,35 @@ test_expect_success 'show-ref -d' '
 
 '
 
-test_expect_success 'show-ref --heads, --tags, --head, pattern' '
-	for branch in B master side
+test_expect_success 'show-ref --branches, --tags, --head, pattern' '
+	for branch in B main side
 	do
-		echo $(git rev-parse refs/heads/$branch) refs/heads/$branch
-	done >expect.heads &&
-	git show-ref --heads >actual &&
-	test_cmp expect.heads actual &&
+		echo $(git rev-parse refs/heads/$branch) refs/heads/$branch || return 1
+	done >expect.branches &&
+	git show-ref --branches >actual &&
+	test_cmp expect.branches actual &&
 
 	for tag in A B C
 	do
-		echo $(git rev-parse refs/tags/$tag) refs/tags/$tag
+		echo $(git rev-parse refs/tags/$tag) refs/tags/$tag || return 1
 	done >expect.tags &&
 	git show-ref --tags >actual &&
 	test_cmp expect.tags actual &&
 
-	cat expect.heads expect.tags >expect &&
-	git show-ref --heads --tags >actual &&
+	cat expect.branches expect.tags >expect &&
+	git show-ref --branches --tags >actual &&
 	test_cmp expect actual &&
 
 	{
 		echo $(git rev-parse HEAD) HEAD &&
-		cat expect.heads expect.tags
+		cat expect.branches expect.tags
 	} >expect &&
-	git show-ref --heads --tags --head >actual &&
+	git show-ref --branches --tags --head >actual &&
 	test_cmp expect actual &&
 
 	{
 		echo $(git rev-parse HEAD) HEAD &&
-		echo $(git rev-parse refs/heads/B) refs/heads/B
+		echo $(git rev-parse refs/heads/B) refs/heads/B &&
 		echo $(git rev-parse refs/tags/B) refs/tags/B
 	} >expect &&
 	git show-ref --head B >actual &&
@@ -155,12 +156,20 @@ test_expect_success 'show-ref --heads, --tags, --head, pattern' '
 
 	{
 		echo $(git rev-parse HEAD) HEAD &&
-		echo $(git rev-parse refs/heads/B) refs/heads/B
-		echo $(git rev-parse refs/tags/B) refs/tags/B
+		echo $(git rev-parse refs/heads/B) refs/heads/B &&
+		echo $(git rev-parse refs/tags/B) refs/tags/B &&
 		echo $(git rev-parse refs/tags/B^0) "refs/tags/B^{}"
 	} >expect &&
 	git show-ref --head -d B >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'show-ref --heads is deprecated and hidden' '
+	git show-ref -h >short-help &&
+	test_grep ! -e --heads short-help &&
+	git show-ref --heads >actual 2>warning &&
+	test_grep ! deprecated warning &&
+	test_cmp expect.branches actual
 '
 
 test_expect_success 'show-ref --verify HEAD' '
@@ -172,6 +181,14 @@ test_expect_success 'show-ref --verify HEAD' '
 	test_must_be_empty actual
 '
 
+test_expect_success 'show-ref --verify pseudorefs' '
+	git update-ref CHERRY_PICK_HEAD HEAD $ZERO_OID &&
+	test_when_finished "git update-ref -d CHERRY_PICK_HEAD" &&
+	git show-ref -s --verify HEAD >actual &&
+	git show-ref -s --verify CHERRY_PICK_HEAD >expect &&
+	test_cmp actual expect
+'
+
 test_expect_success 'show-ref --verify with dangling ref' '
 	sha1_file() {
 		echo "$*" | sed "s#..#.git/objects/&/#"
@@ -179,7 +196,7 @@ test_expect_success 'show-ref --verify with dangling ref' '
 
 	remove_object() {
 		file=$(sha1_file "$*") &&
-		test -e "$file" &&
+		test_path_is_file "$file" &&
 		rm -f "$file"
 	} &&
 
@@ -192,6 +209,23 @@ test_expect_success 'show-ref --verify with dangling ref' '
 		remove_object $sha &&
 		test_must_fail git show-ref --verify refs/tags/dangling
 	)
+'
+
+test_expect_success 'show-ref sub-modes are mutually exclusive' '
+	test_must_fail git show-ref --verify --exclude-existing 2>err &&
+	test_grep "verify" err &&
+	test_grep "exclude-existing" err &&
+	test_grep "cannot be used together" err &&
+
+	test_must_fail git show-ref --verify --exists 2>err &&
+	test_grep "verify" err &&
+	test_grep "exists" err &&
+	test_grep "cannot be used together" err &&
+
+	test_must_fail git show-ref --exclude-existing --exists 2>err &&
+	test_grep "exclude-existing" err &&
+	test_grep "exists" err &&
+	test_grep "cannot be used together" err
 '
 
 test_done

@@ -1,5 +1,20 @@
-#include "cache.h"
+#include "git-compat-util.h"
+#include "hex-ll.h"
+#include "strbuf.h"
 #include "url.h"
+
+int is_rfc3986_unreserved(char ch)
+{
+	return isalnum(ch) ||
+		ch == '-' || ch == '_' || ch == '.' || ch == '~';
+}
+
+int is_casefolding_rfc3986_unreserved(char c)
+{
+	return (c >= 'a' && c <= 'z') ||
+	       (c >= '0' && c <= '9') ||
+	       c == '-' || c == '.' || c == '_' || c == '~';
+}
 
 int is_urlschemechar(int first_flag, int ch)
 {
@@ -116,4 +131,27 @@ void str_end_url_with_slash(const char *url, char **dest)
 	end_url_with_slash(&buf, url);
 	free(*dest);
 	*dest = strbuf_detach(&buf, NULL);
+}
+
+int url_is_local_not_ssh(const char *url)
+{
+	const char *colon = strchr(url, ':');
+	const char *slash = strchr(url, '/');
+	return !colon || (slash && slash < colon) ||
+		(has_dos_drive_prefix(url) && is_valid_path(url));
+}
+
+enum url_scheme url_get_scheme(const char *name)
+{
+	if (!strcmp(name, "ssh"))
+		return URL_SCHEME_SSH;
+	if (!strcmp(name, "git"))
+		return URL_SCHEME_GIT;
+	if (!strcmp(name, "git+ssh")) /* deprecated - do not use */
+		return URL_SCHEME_SSH;
+	if (!strcmp(name, "ssh+git")) /* deprecated - do not use */
+		return URL_SCHEME_SSH;
+	if (!strcmp(name, "file"))
+		return URL_SCHEME_FILE;
+	return URL_SCHEME_UNKNOWN;
 }

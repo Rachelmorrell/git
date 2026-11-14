@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='git blame corner cases'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 pick_fc='s/^[0-9a-f^]* *\([^ ]*\) *(\([^ ]*\) .*/\1-\2/'
@@ -10,14 +13,8 @@ test_expect_success setup '
 	echo B B B B B >two &&
 	echo C C C C C >tres &&
 	echo ABC >mouse &&
-	for i in 1 2 3 4 5 6 7 8 9
-	do
-		echo $i
-	done >nine_lines &&
-	for i in 1 2 3 4 5 6 7 8 9 a
-	do
-		echo $i
-	done >ten_lines &&
+	test_write_lines 1 2 3 4 5 6 7 8 9 >nine_lines &&
+	test_write_lines 1 2 3 4 5 6 7 8 9 a >ten_lines &&
 	git add one two tres mouse nine_lines ten_lines &&
 	test_tick &&
 	GIT_AUTHOR_NAME=Initial git commit -m Initial &&
@@ -52,80 +49,69 @@ test_expect_success setup '
 '
 
 test_expect_success 'straight copy without -C' '
-
-	git blame uno | grep Second
-
+	git blame uno >actual &&
+	test_grep Second actual
 '
 
 test_expect_success 'straight move without -C' '
-
-	git blame dos | grep Initial
-
+	git blame dos >actual &&
+	test_grep Initial actual
 '
 
 test_expect_success 'straight copy with -C' '
-
-	git blame -C1 uno | grep Second
-
+	git blame -C1 uno >actual &&
+	test_grep Second actual
 '
 
 test_expect_success 'straight move with -C' '
-
-	git blame -C1 dos | grep Initial
-
+	git blame -C1 dos >actual &&
+	test_grep Initial actual
 '
 
 test_expect_success 'straight copy with -C -C' '
-
-	git blame -C -C1 uno | grep Initial
-
+	git blame -C -C1 uno >actual &&
+	test_grep Initial actual
 '
 
 test_expect_success 'straight move with -C -C' '
-
-	git blame -C -C1 dos | grep Initial
-
+	git blame -C -C1 dos >actual &&
+	test_grep Initial actual
 '
 
 test_expect_success 'append without -C' '
-
-	git blame -L2 tres | grep Second
-
+	git blame -L2 tres >actual &&
+	test_grep Second actual
 '
 
 test_expect_success 'append with -C' '
-
-	git blame -L2 -C1 tres | grep Second
-
+	git blame -L2 -C1 tres >actual &&
+	test_grep Second actual
 '
 
 test_expect_success 'append with -C -C' '
-
-	git blame -L2 -C -C1 tres | grep Second
-
+	git blame -L2 -C -C1 tres >actual &&
+	test_grep Second actual
 '
 
 test_expect_success 'append with -C -C -C' '
-
-	git blame -L2 -C -C -C1 tres | grep Initial
-
+	git blame -L2 -C -C -C1 tres >actual &&
+	test_grep Initial actual
 '
 
 test_expect_success 'blame wholesale copy' '
-
-	git blame -f -C -C1 HEAD^ -- cow | sed -e "$pick_fc" >current &&
+	git blame -f -C -C1 HEAD^ -- cow >actual &&
+	sed -e "$pick_fc" actual >current &&
 	cat >expected <<-\EOF &&
 	mouse-Initial
 	mouse-Second
 	mouse-Third
 	EOF
 	test_cmp expected current
-
 '
 
 test_expect_success 'blame wholesale copy and more' '
-
-	git blame -f -C -C1 HEAD -- cow | sed -e "$pick_fc" >current &&
+	git blame -f -C -C1 HEAD -- cow >actual &&
+	sed -e "$pick_fc" actual >current &&
 	cat >expected <<-\EOF &&
 	mouse-Initial
 	mouse-Second
@@ -133,11 +119,9 @@ test_expect_success 'blame wholesale copy and more' '
 	mouse-Third
 	EOF
 	test_cmp expected current
-
 '
 
 test_expect_success 'blame wholesale copy and more in the index' '
-
 	cat >horse <<-\EOF &&
 	ABC
 	DEF
@@ -147,7 +131,8 @@ test_expect_success 'blame wholesale copy and more in the index' '
 	EOF
 	git add horse &&
 	test_when_finished "git rm -f horse" &&
-	git blame -f -C -C1 -- horse | sed -e "$pick_fc" >current &&
+	git blame -f -C -C1 -- horse >actual &&
+	sed -e "$pick_fc" actual >current &&
 	cat >expected <<-\EOF &&
 	mouse-Initial
 	mouse-Second
@@ -156,22 +141,21 @@ test_expect_success 'blame wholesale copy and more in the index' '
 	mouse-Third
 	EOF
 	test_cmp expected current
-
 '
 
 test_expect_success 'blame during cherry-pick with file rename conflict' '
-
-	test_when_finished "git reset --hard && git checkout master" &&
+	test_when_finished "git reset --hard && git checkout main" &&
 	git checkout HEAD~3 &&
 	echo MOUSE >> mouse &&
 	git mv mouse rodent &&
 	git add rodent &&
 	GIT_AUTHOR_NAME=Rodent git commit -m "rodent" &&
-	git checkout --detach master &&
+	git checkout --detach main &&
 	(git cherry-pick HEAD@{1} || test $? -eq 1) &&
 	git show HEAD@{1}:rodent > rodent &&
 	git add rodent &&
-	git blame -f -C -C1 rodent | sed -e "$pick_fc" >current &&
+	git blame -f -C -C1 rodent >actual &&
+	sed -e "$pick_fc" actual >current &&
 	cat >expected <<-\EOF &&
 	mouse-Initial
 	mouse-Second
@@ -204,13 +188,13 @@ committer David Reiss <dreiss@facebook.com> 1234567890 +0000
 
 some message
 EOF
-  COMMIT=$(git hash-object -t commit -w badcommit) &&
+  COMMIT=$(git hash-object --literally -t commit -w badcommit) &&
   git --no-pager blame $COMMIT -- uno >/dev/null
 '
 
 test_expect_success 'blame -L with invalid start' '
 	test_must_fail git blame -L5 tres 2>errors &&
-	test_i18ngrep "has only 2 lines" errors
+	test_grep "has only 2 lines" errors
 '
 
 test_expect_success 'blame -L with invalid end' '
@@ -249,14 +233,14 @@ test_expect_success 'setup file with CRLF newlines' '
 test_expect_success 'blame file with CRLF core.autocrlf true' '
 	git config core.autocrlf true &&
 	git blame crlffile >actual &&
-	grep "A U Thor" actual
+	test_grep "A U Thor" actual
 '
 
 test_expect_success 'blame file with CRLF attributes text' '
 	git config core.autocrlf false &&
 	echo "crlffile text" >.gitattributes &&
 	git blame crlffile >actual &&
-	grep "A U Thor" actual
+	test_grep "A U Thor" actual
 '
 
 test_expect_success 'blame file with CRLF core.autocrlf=true' '
@@ -270,7 +254,7 @@ test_expect_success 'blame file with CRLF core.autocrlf=true' '
 	git checkout crlfinrepo &&
 	rm tmp &&
 	git blame crlfinrepo >actual &&
-	grep "A U Thor" actual
+	test_grep "A U Thor" actual
 '
 
 test_expect_success 'setup coalesce tests' '

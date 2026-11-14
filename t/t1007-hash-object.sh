@@ -30,7 +30,7 @@ setup_repo() {
 
 test_repo=test
 push_repo() {
-	test_create_repo $test_repo
+	git init --quiet $test_repo
 	cd $test_repo
 
 	setup_repo
@@ -49,6 +49,9 @@ test_expect_success 'setup' '
 
 	example sha1:ddd3f836d3e3fbb7ae289aa9ae83536f76956399
 	example sha256:b44fe1fe65589848253737db859bd490453510719d7424daab03daf0767b85ae
+
+	large5GB sha1:0be2be10a4c8764f32c4bf372a98edc731a4b204
+	large5GB sha256:dc18ca621300c8d3cfa505a275641ebab00de189859e022a975056882d313e64
 	EOF
 '
 
@@ -123,8 +126,8 @@ test_expect_success 'check that appropriate filter is invoke when --path is used
 	path0_sha=$(git hash-object --path=file0 file1) &&
 	test "$file0_sha" = "$path0_sha" &&
 	test "$file1_sha" = "$path1_sha" &&
-	path1_sha=$(cat file0 | git hash-object --path=file1 --stdin) &&
-	path0_sha=$(cat file1 | git hash-object --path=file0 --stdin) &&
+	path1_sha=$(git hash-object --path=file1 --stdin <file0) &&
+	path0_sha=$(git hash-object --path=file0 --stdin <file1) &&
 	test "$file0_sha" = "$path0_sha" &&
 	test "$file1_sha" = "$path1_sha"
 '
@@ -153,7 +156,7 @@ test_expect_success '--path works in a subdirectory' '
 test_expect_success 'check that --no-filters option works' '
 	nofilters_file1=$(git hash-object --no-filters file1) &&
 	test "$file0_sha" = "$nofilters_file1" &&
-	nofilters_file1=$(cat file1 | git hash-object --stdin) &&
+	nofilters_file1=$(git hash-object --stdin <file1) &&
 	test "$file0_sha" = "$nofilters_file1"
 '
 
@@ -202,23 +205,34 @@ done
 test_expect_success 'too-short tree' '
 	echo abc >malformed-tree &&
 	test_must_fail git hash-object -t tree malformed-tree 2>err &&
-	test_i18ngrep "too-short tree object" err
+	test_grep "too-short tree object" err
 '
 
-test_expect_success 'malformed mode in tree' '
-	hex_sha1=$(echo foo | git hash-object --stdin -w) &&
-	bin_sha1=$(echo $hex_sha1 | hex2oct) &&
-	printf "9100644 \0$bin_sha1" >tree-with-malformed-mode &&
+test_expect_success PERL_TEST_HELPERS 'malformed mode in tree' '
+	hex_oid=$(echo foo | git hash-object --stdin -w) &&
+	bin_oid=$(echo $hex_oid | hex2oct) &&
+	printf "9100644 \0$bin_oid" >tree-with-malformed-mode &&
 	test_must_fail git hash-object -t tree tree-with-malformed-mode 2>err &&
-	test_i18ngrep "malformed mode in tree entry" err
+	test_grep "malformed mode in tree entry" err
 '
 
-test_expect_success 'empty filename in tree' '
-	hex_sha1=$(echo foo | git hash-object --stdin -w) &&
-	bin_sha1=$(echo $hex_sha1 | hex2oct) &&
-	printf "100644 \0$bin_sha1" >tree-with-empty-filename &&
+test_expect_success PERL_TEST_HELPERS 'empty filename in tree' '
+	hex_oid=$(echo foo | git hash-object --stdin -w) &&
+	bin_oid=$(echo $hex_oid | hex2oct) &&
+	printf "100644 \0$bin_oid" >tree-with-empty-filename &&
 	test_must_fail git hash-object -t tree tree-with-empty-filename 2>err &&
-	test_i18ngrep "empty filename in tree entry" err
+	test_grep "empty filename in tree entry" err
+'
+
+test_expect_success PERL_TEST_HELPERS 'duplicate filename in tree' '
+	hex_oid=$(echo foo | git hash-object --stdin -w) &&
+	bin_oid=$(echo $hex_oid | hex2oct) &&
+	{
+		printf "100644 file\0$bin_oid" &&
+		printf "100644 file\0$bin_oid"
+	} >tree-with-duplicate-filename &&
+	test_must_fail git hash-object -t tree tree-with-duplicate-filename 2>err &&
+	test_grep "duplicateEntries" err
 '
 
 test_expect_success 'corrupt commit' '
@@ -237,15 +251,50 @@ test_expect_success 'hash-object complains about truncated type name' '
 	test_must_fail git hash-object -t bl --stdin </dev/null
 '
 
-test_expect_success '--literally' '
-	t=1234567890 &&
-	echo example | git hash-object -t $t --literally --stdin
+test_expect_success '--literally complains about non-standard types' '
+	test_must_fail git hash-object -t bogus --literally --stdin
 '
 
-test_expect_success '--literally with extra-long type' '
-	t=12345678901234567890123456789012345678901234567890 &&
-	t="$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t$t" &&
-	echo example | git hash-object -t $t --literally --stdin
+test_expect_success '--stdin outside of repository (uses default hash)' '
+	nongit git hash-object --stdin <hello >actual &&
+	echo "$(test_oid --hash=builtin hello)" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \
+		'files over 4GB hash literally' '
+	test-tool genzeros $((5*1024*1024*1024)) >big &&
+	test_oid large5GB >expect &&
+	git hash-object --stdin --literally <big >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \
+		'files over 4GB hash correctly via --stdin' '
+	{ test -f big || test-tool genzeros $((5*1024*1024*1024)) >big; } &&
+	test_oid large5GB >expect &&
+	git hash-object --stdin <big >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \
+		'files over 4GB hash correctly' '
+	{ test -f big || test-tool genzeros $((5*1024*1024*1024)) >big; } &&
+	test_oid large5GB >expect &&
+	git hash-object -- big >actual &&
+	test_cmp expect actual
+'
+
+# This clean filter does nothing, other than excercising the interface.
+# We ensure that cleaning doesn't mangle large files on 64-bit Windows.
+test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \
+		'hash filtered files over 4GB correctly' '
+	{ test -f big || test-tool genzeros $((5*1024*1024*1024)) >big; } &&
+	test_oid large5GB >expect &&
+	test_config filter.null-filter.clean "cat" &&
+	echo "big filter=null-filter" >.gitattributes &&
+	git hash-object -- big >actual &&
+	test_cmp expect actual
 '
 
 test_done

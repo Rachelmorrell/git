@@ -1,0 +1,21 @@
+gittutorial-2(7)
+================
+
+NAME
+----
+gittutorial-2 - Obsolete tutorial
+
+DESCRIPTION
+-----------
+
+This tutorial has been deleted since it had become very stale.
+
+See linkgit:gitdatamodel[7] for an explanation of how Git's core data
+structures work (objects, references and the index).
+
+See linkgit:gitcore-tutorial[7] for a practical tutorial on how to
+explore Git's internals.
+
+GIT
+---
+Part of the linkgit:git[1] suite

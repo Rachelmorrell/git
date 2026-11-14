@@ -4,6 +4,8 @@ test_description='git p4 rcs keywords'
 
 . ./lib-git-p4.sh
 
+CP1252="\223\224"
+
 test_expect_success 'start p4d' '
 	start_p4d
 '
@@ -32,6 +34,9 @@ test_expect_success 'init depot' '
 		p4 submit -d "filek" &&
 		p4 add -t text+ko fileko &&
 		p4 submit -d "fileko" &&
+		printf "$CP1252" >fileko_cp1252 &&
+		p4 add -t text+ko fileko_cp1252 &&
+		p4 submit -d "fileko_cp1252" &&
 		p4 add -t text file_text &&
 		p4 submit -d "file_text"
 	)
@@ -294,12 +299,12 @@ test_expect_success 'cope with rcs keyword file deletion' '
 		echo "\$Revision\$" >kwdelfile.c &&
 		p4 add -t ktext kwdelfile.c &&
 		p4 submit -d "Add file to be deleted" &&
-		grep 1 kwdelfile.c
+		test_grep 1 kwdelfile.c
 	) &&
 	git p4 clone --dest="$git" //depot &&
 	(
 		cd "$git" &&
-		grep Revision kwdelfile.c &&
+		test_grep Revision kwdelfile.c &&
 		git rm -f kwdelfile.c &&
 		git commit -m "Delete a file containing RCS keywords" &&
 		git config git-p4.skipSubmitEdit true &&
@@ -331,7 +336,7 @@ test_expect_success 'Add keywords in git which match the default p4 values' '
 		cd "$cli" &&
 		p4 sync &&
 		test -f kwfile1.c &&
-		grep "NewKW.*Revision.*[0-9]" kwfile1.c
+		test_grep "NewKW.*Revision.*[0-9]" kwfile1.c
 
 	)
 '
@@ -354,8 +359,18 @@ test_expect_failure 'Add keywords in git which do not match the default p4 value
 	(
 		cd "$cli" &&
 		p4 sync &&
-		grep "NewKW2.*Revision.*[0-9]" kwfile1.c
+		test_grep "NewKW2.*Revision.*[0-9]" kwfile1.c
 
+	)
+'
+
+test_expect_success 'check cp1252 smart quote are preserved through RCS keyword processing' '
+	test_when_finished cleanup_git &&
+	git p4 clone --dest="$git" //depot &&
+	(
+		cd "$git" &&
+		printf "$CP1252" >expect &&
+		test_cmp_bin expect fileko_cp1252
 	)
 '
 

@@ -18,19 +18,24 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *  along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "advice.h"
 #include "config.h"
 #include "credential.h"
-#include "exec-cmd.h"
+#include "environment.h"
+#include "gettext.h"
 #include "run-command.h"
 #include "parse-options.h"
-#ifdef NO_OPENSSL
-typedef void *SSL;
-#endif
+#include "setup.h"
+#include "strbuf.h"
 #ifdef USE_CURL_FOR_IMAP_SEND
+#include "git-curl-compat.h"
 #include "http.h"
 #endif
 
@@ -43,13 +48,23 @@ typedef void *SSL;
 #endif
 
 static int verbosity;
+static int list_folders;
 static int use_curl = USE_CURL_DEFAULT;
+static int opt_draft;
+static char *opt_folder;
 
-static const char * const imap_send_usage[] = { "git imap-send [-v] [-q] [--[no-]curl] < <mbox>", NULL };
+static char const * const imap_send_usage[] = {
+	N_("git imap-send [-v] [-q] [--[no-]curl] [--[no-]draft] [(--folder|-f) <folder>] < <mbox>"),
+	"git imap-send --list",
+	NULL
+};
 
 static struct option imap_send_options[] = {
 	OPT__VERBOSITY(&verbosity),
 	OPT_BOOL(0, "curl", &use_curl, "use libcurl to communicate with the IMAP server"),
+	OPT_BOOL(0, "draft", &opt_draft, "mark uploaded messages with the IMAP \\Draft flag"),
+	OPT_STRING('f', "folder", &opt_folder, "folder", "specify the IMAP folder"),
+	OPT_BOOL(0, "list", &list_folders, "list all folders on the IMAP server"),
 	OPT_END()
 };
 
@@ -66,54 +81,26 @@ static void imap_warn(const char *, ...);
 
 static char *next_arg(char **);
 
-__attribute__((format (printf, 3, 4)))
-static int nfsnprintf(char *buf, int blen, const char *fmt, ...);
-
-static int nfvasprintf(char **strp, const char *fmt, va_list ap)
-{
-	int len;
-	char tmp[8192];
-
-	len = vsnprintf(tmp, sizeof(tmp), fmt, ap);
-	if (len < 0)
-		die("Fatal: Out of memory");
-	if (len >= sizeof(tmp))
-		die("imap command overflow!");
-	*strp = xmemdupz(tmp, len);
-	return len;
-}
-
 struct imap_server_conf {
-	const char *name;
-	const char *tunnel;
-	const char *host;
+	char *tunnel;
+	char *host;
 	int port;
-	const char *folder;
-	const char *user;
-	const char *pass;
+	char *folder;
+	char *user;
+	char *pass;
 	int use_ssl;
 	int ssl_verify;
 	int use_html;
-	const char *auth_method;
-};
-
-static struct imap_server_conf server = {
-	NULL,	/* name */
-	NULL,	/* tunnel */
-	NULL,	/* host */
-	0,	/* port */
-	NULL,	/* folder */
-	NULL,	/* user */
-	NULL,	/* pass */
-	0,   	/* use_ssl */
-	1,   	/* ssl_verify */
-	0,   	/* use_html */
-	NULL,	/* auth_method */
+	char *auth_method;
 };
 
 struct imap_socket {
 	int fd[2];
+#if defined(NO_OPENSSL) && !defined(HAVE_OPENSSL_CSPRNG)
+	void *ssl;
+#else
 	SSL *ssl;
+#endif
 };
 
 struct imap_buffer {
@@ -135,6 +122,7 @@ struct imap {
 };
 
 struct imap_store {
+	const struct imap_server_conf *cfg;
 	/* currently open mailbox */
 	const char *name; /* foreign! maybe preset? */
 	int uidvalidity;
@@ -143,12 +131,10 @@ struct imap_store {
 };
 
 struct imap_cmd_cb {
-	int (*cont)(struct imap_store *ctx, struct imap_cmd *cmd, const char *prompt);
-	void (*done)(struct imap_store *ctx, struct imap_cmd *cmd, int response);
+	int (*cont)(struct imap_store *ctx, const char *prompt);
 	void *ctx;
 	char *data;
 	int dlen;
-	int uid;
 };
 
 struct imap_cmd {
@@ -166,7 +152,10 @@ enum CAPABILITY {
 	LITERALPLUS,
 	NAMESPACE,
 	STARTTLS,
-	AUTH_CRAM_MD5
+	AUTH_PLAIN,
+	AUTH_CRAM_MD5,
+	AUTH_OAUTHBEARER,
+	AUTH_XOAUTH2,
 };
 
 static const char *cap_list[] = {
@@ -175,7 +164,10 @@ static const char *cap_list[] = {
 	"LITERAL+",
 	"NAMESPACE",
 	"STARTTLS",
+	"AUTH=PLAIN",
 	"AUTH=CRAM-MD5",
+	"AUTH=OAUTHBEARER",
+	"AUTH=XOAUTH2",
 };
 
 #define RESP_OK    0
@@ -215,19 +207,29 @@ static void socket_perror(const char *func, struct imap_socket *sock, int ret)
 		else
 			fprintf(stderr, "%s: unexpected EOF\n", func);
 	}
+	/* mark as used to appease -Wunused-parameter with NO_OPENSSL */
+	(void)sock;
 }
 
 #ifdef NO_OPENSSL
-static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int verify)
+static int ssl_socket_connect(struct imap_socket *sock UNUSED,
+			      const struct imap_server_conf *cfg UNUSED,
+			      int use_tls_only UNUSED)
 {
-	fprintf(stderr, "SSL requested but SSL support not compiled in\n");
+	fprintf(stderr, "SSL requested, but SSL support is not compiled in\n");
 	return -1;
 }
 
 #else
 
-static int host_matches(const char *host, const char *pattern)
+static int host_matches(const char *host, const ASN1_STRING *asn1_str)
 {
+	const char *pattern = (const char *)ASN1_STRING_get0_data(asn1_str);
+
+	/* embedded NUL characters may open a security hole */
+	if (memchr(pattern, '\0', ASN1_STRING_length(asn1_str)))
+	    return 0;
+
 	if (pattern[0] == '*' && pattern[1] == '.') {
 		pattern += 2;
 		if (!(host = strchr(host, '.')))
@@ -240,9 +242,13 @@ static int host_matches(const char *host, const char *pattern)
 
 static int verify_hostname(X509 *cert, const char *hostname)
 {
-	int len;
+#if (OPENSSL_VERSION_NUMBER >= 0x40000000L)
+	const X509_NAME *subj;
+#else
 	X509_NAME *subj;
-	char cname[1000];
+#endif
+	const X509_NAME_ENTRY *cname_entry;
+	const ASN1_STRING *cname;
 	int i, found;
 	STACK_OF(GENERAL_NAME) *subj_alt_names;
 
@@ -251,10 +257,11 @@ static int verify_hostname(X509 *cert, const char *hostname)
 	if ((subj_alt_names = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL))) {
 		int num_subj_alt_names = sk_GENERAL_NAME_num(subj_alt_names);
 		for (i = 0; !found && i < num_subj_alt_names; i++) {
+			int ntype;
 			GENERAL_NAME *subj_alt_name = sk_GENERAL_NAME_value(subj_alt_names, i);
-			if (subj_alt_name->type == GEN_DNS &&
-			    strlen((const char *)subj_alt_name->d.ia5->data) == (size_t)subj_alt_name->d.ia5->length &&
-			    host_matches(hostname, (const char *)(subj_alt_name->d.ia5->data)))
+			ASN1_STRING *subj_alt_str = GENERAL_NAME_get0_value(subj_alt_name, &ntype);
+
+			if (ntype == GEN_DNS && host_matches(hostname, subj_alt_str))
 				found = 1;
 		}
 		sk_GENERAL_NAME_pop_free(subj_alt_names, GENERAL_NAME_free);
@@ -265,15 +272,19 @@ static int verify_hostname(X509 *cert, const char *hostname)
 	/* try the common name */
 	if (!(subj = X509_get_subject_name(cert)))
 		return error("cannot get certificate subject");
-	if ((len = X509_NAME_get_text_by_NID(subj, NID_commonName, cname, sizeof(cname))) < 0)
+	if ((i = X509_NAME_get_index_by_NID(subj, NID_commonName, -1)) < 0 ||
+	    (cname_entry = X509_NAME_get_entry(subj, i)) == NULL ||
+	    (cname = X509_NAME_ENTRY_get_data(cname_entry)) == NULL)
 		return error("cannot get certificate common name");
-	if (strlen(cname) == (size_t)len && host_matches(hostname, cname))
+	if (host_matches(hostname, cname))
 		return 0;
 	return error("certificate owner '%s' does not match hostname '%s'",
-		     cname, hostname);
+		     ASN1_STRING_get0_data(cname), hostname);
 }
 
-static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int verify)
+static int ssl_socket_connect(struct imap_socket *sock,
+			      const struct imap_server_conf *cfg,
+			      int use_tls_only)
 {
 #if (OPENSSL_VERSION_NUMBER >= 0x10000000L)
 	const SSL_METHOD *meth;
@@ -302,7 +313,7 @@ static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int ve
 	if (use_tls_only)
 		SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
 
-	if (verify)
+	if (cfg->ssl_verify)
 		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 
 	if (!SSL_CTX_set_default_verify_paths(ctx)) {
@@ -329,9 +340,9 @@ static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int ve
 	 * OpenSSL does not document this function, but the implementation
 	 * returns 1 on success, 0 on failure after calling SSLerr().
 	 */
-	ret = SSL_set_tlsext_host_name(sock->ssl, server.host);
+	ret = SSL_set_tlsext_host_name(sock->ssl, cfg->host);
 	if (ret != 1)
-		warning("SSL_set_tlsext_host_name(%s) failed.", server.host);
+		warning("SSL_set_tlsext_host_name(%s) failed.", cfg->host);
 #endif
 
 	ret = SSL_connect(sock->ssl);
@@ -340,12 +351,14 @@ static int ssl_socket_connect(struct imap_socket *sock, int use_tls_only, int ve
 		return -1;
 	}
 
-	if (verify) {
+	if (cfg->ssl_verify) {
 		/* make sure the hostname matches that of the certificate */
 		cert = SSL_get_peer_certificate(sock->ssl);
 		if (!cert)
 			return error("unable to get peer certificate.");
-		if (verify_hostname(cert, server.host) < 0)
+		if (SSL_get_verify_result(sock->ssl) != X509_V_OK)
+			return error("unable to verify peer certificate");
+		if (verify_hostname(cert, cfg->host) < 0)
 			return -1;
 	}
 
@@ -440,7 +453,7 @@ static int buffer_gets(struct imap_buffer *b, char **s)
 			if (b->buf[b->offset + 1] == '\n') {
 				b->buf[b->offset] = 0;  /* terminate the string */
 				b->offset += 2; /* next line */
-				if (0 < verbosity)
+				if ((0 < verbosity) || (list_folders && strstr(*s, "* LIST")))
 					puts(*s);
 				return 0;
 			}
@@ -451,6 +464,7 @@ static int buffer_gets(struct imap_buffer *b, char **s)
 	/* not reached */
 }
 
+__attribute__((format (printf, 1, 2)))
 static void imap_info(const char *msg, ...)
 {
 	va_list va;
@@ -463,6 +477,7 @@ static void imap_info(const char *msg, ...)
 	}
 }
 
+__attribute__((format (printf, 1, 2)))
 static void imap_warn(const char *msg, ...)
 {
 	va_list va;
@@ -504,29 +519,17 @@ static char *next_arg(char **s)
 	return ret;
 }
 
-static int nfsnprintf(char *buf, int blen, const char *fmt, ...)
-{
-	int ret;
-	va_list va;
-
-	va_start(va, fmt);
-	if (blen <= 0 || (unsigned)(ret = vsnprintf(buf, blen, fmt, va)) >= (unsigned)blen)
-		BUG("buffer too small. Please report a bug.");
-	va_end(va);
-	return ret;
-}
-
 static struct imap_cmd *issue_imap_cmd(struct imap_store *ctx,
 				       struct imap_cmd_cb *cb,
 				       const char *fmt, va_list ap)
 {
 	struct imap *imap = ctx->imap;
 	struct imap_cmd *cmd;
-	int n, bufl;
-	char buf[1024];
+	int n;
+	struct strbuf buf = STRBUF_INIT;
 
 	cmd = xmalloc(sizeof(struct imap_cmd));
-	nfvasprintf(&cmd->cmd, fmt, ap);
+	cmd->cmd = xstrvfmt(fmt, ap);
 	cmd->tag = ++imap->nexttag;
 
 	if (cb)
@@ -538,27 +541,30 @@ static struct imap_cmd *issue_imap_cmd(struct imap_store *ctx,
 		get_cmd_result(ctx, NULL);
 
 	if (!cmd->cb.data)
-		bufl = nfsnprintf(buf, sizeof(buf), "%d %s\r\n", cmd->tag, cmd->cmd);
+		strbuf_addf(&buf, "%d %s\r\n", cmd->tag, cmd->cmd);
 	else
-		bufl = nfsnprintf(buf, sizeof(buf), "%d %s{%d%s}\r\n",
-				  cmd->tag, cmd->cmd, cmd->cb.dlen,
-				  CAP(LITERALPLUS) ? "+" : "");
+		strbuf_addf(&buf, "%d %s{%d%s}\r\n", cmd->tag, cmd->cmd,
+			    cmd->cb.dlen, CAP(LITERALPLUS) ? "+" : "");
+	if (buf.len > INT_MAX)
+		die("imap command overflow!");
 
 	if (0 < verbosity) {
 		if (imap->num_in_progress)
 			printf("(%d in progress) ", imap->num_in_progress);
 		if (!starts_with(cmd->cmd, "LOGIN"))
-			printf(">>> %s", buf);
+			printf(">>> %s", buf.buf);
 		else
 			printf(">>> %d LOGIN <user> <pass>\n", cmd->tag);
 	}
-	if (socket_write(&imap->buf.sock, buf, bufl) != bufl) {
+	if (socket_write(&imap->buf.sock, buf.buf, buf.len) != buf.len) {
 		free(cmd->cmd);
 		free(cmd);
 		if (cb)
 			free(cb->data);
+		strbuf_release(&buf);
 		return NULL;
 	}
+	strbuf_release(&buf);
 	if (cmd->cb.data) {
 		if (CAP(LITERALPLUS)) {
 			n = socket_write(&imap->buf.sock, cmd->cb.data, cmd->cb.dlen);
@@ -697,12 +703,12 @@ static int parse_response_code(struct imap_store *ctx, struct imap_cmd_cb *cb,
 		return RESP_BAD;
 	}
 	if (!strcmp("UIDVALIDITY", arg)) {
-		if (!(arg = next_arg(&s)) || !(ctx->uidvalidity = atoi(arg))) {
+		if (!(arg = next_arg(&s)) || strtol_i(arg, 10, &ctx->uidvalidity) || !ctx->uidvalidity) {
 			fprintf(stderr, "IMAP error: malformed UIDVALIDITY status\n");
 			return RESP_BAD;
 		}
 	} else if (!strcmp("UIDNEXT", arg)) {
-		if (!(arg = next_arg(&s)) || !(imap->uidnext = atoi(arg))) {
+		if (!(arg = next_arg(&s)) || strtol_i(arg, 10, &imap->uidnext) || !imap->uidnext) {
 			fprintf(stderr, "IMAP error: malformed NEXTUID status\n");
 			return RESP_BAD;
 		}
@@ -715,8 +721,8 @@ static int parse_response_code(struct imap_store *ctx, struct imap_cmd_cb *cb,
 		for (; isspace((unsigned char)*p); p++);
 		fprintf(stderr, "*** IMAP ALERT *** %s\n", p);
 	} else if (cb && cb->ctx && !strcmp("APPENDUID", arg)) {
-		if (!(arg = next_arg(&s)) || !(ctx->uidvalidity = atoi(arg)) ||
-		    !(arg = next_arg(&s)) || !(*(int *)cb->ctx = atoi(arg))) {
+		if (!(arg = next_arg(&s)) || strtol_i(arg, 10, &ctx->uidvalidity) || !ctx->uidvalidity ||
+		    !(arg = next_arg(&s)) || strtol_i(arg, 10, (int *)cb->ctx) || !cb->ctx) {
 			fprintf(stderr, "IMAP error: malformed APPENDUID status\n");
 			return RESP_BAD;
 		}
@@ -789,7 +795,7 @@ static int get_cmd_result(struct imap_store *ctx, struct imap_cmd *tcmd)
 				if (n != (int)cmdp->cb.dlen)
 					return RESP_BAD;
 			} else if (cmdp->cb.cont) {
-				if (cmdp->cb.cont(ctx, cmdp, cmd))
+				if (cmdp->cb.cont(ctx, cmd))
 					return RESP_BAD;
 			} else {
 				fprintf(stderr, "IMAP error: unexpected command continuation request\n");
@@ -802,7 +808,10 @@ static int get_cmd_result(struct imap_store *ctx, struct imap_cmd *tcmd)
 			if (!tcmd)
 				return DRV_OK;
 		} else {
-			tag = atoi(arg);
+			if (strtol_i(arg, 10, &tag)) {
+				fprintf(stderr, "IMAP error: malformed tag %s\n", arg);
+				return RESP_BAD;
+			}
 			for (pcmdp = &imap->in_progress; (cmdp = *pcmdp); pcmdp = &cmdp->next)
 				if (cmdp->tag == tag)
 					goto gottag;
@@ -831,8 +840,6 @@ static int get_cmd_result(struct imap_store *ctx, struct imap_cmd *tcmd)
 			}
 			if ((resp2 = parse_response_code(ctx, &cmdp->cb, cmd)) > resp)
 				resp = resp2;
-			if (cmdp->cb.done)
-				cmdp->cb.done(ctx, cmdp, resp);
 			free(cmdp->cb.data);
 			free(cmdp->cmd);
 			free(cmdp);
@@ -864,7 +871,7 @@ static void imap_close_store(struct imap_store *ctx)
 
 /*
  * hexchar() and cram() functions are based on the code from the isync
- * project (http://isync.sf.net/).
+ * project (https://isync.sourceforge.io/).
  */
 static char hexchar(unsigned int b)
 {
@@ -872,6 +879,38 @@ static char hexchar(unsigned int b)
 }
 
 #define ENCODED_SIZE(n) (4 * DIV_ROUND_UP((n), 3))
+static char *plain_base64(const char *user, const char *pass)
+{
+	struct strbuf raw = STRBUF_INIT;
+	int b64_len;
+	char *b64;
+
+	/*
+	 * Compose the PLAIN string
+	 *
+	 * The username and password are combined to one string and base64 encoded.
+	 * "\0user\0pass"
+	 *
+	 * The method has been described in RFC4616.
+	 *
+	 * https://datatracker.ietf.org/doc/html/rfc4616
+	 */
+	strbuf_addch(&raw, '\0');
+	strbuf_addstr(&raw, user);
+	strbuf_addch(&raw, '\0');
+	strbuf_addstr(&raw, pass);
+
+	b64 = xmallocz(ENCODED_SIZE(raw.len));
+	b64_len = EVP_EncodeBlock((unsigned char *)b64, (unsigned char *)raw.buf, raw.len);
+	strbuf_release(&raw);
+
+	if (b64_len < 0) {
+		free(b64);
+		return NULL;
+	}
+	return b64;
+}
+
 static char *cram(const char *challenge_64, const char *user, const char *pass)
 {
 	int i, resp_len, encoded_len, decoded_len;
@@ -910,31 +949,150 @@ static char *cram(const char *challenge_64, const char *user, const char *pass)
 	return (char *)response_64;
 }
 
-#else
-
-static char *cram(const char *challenge_64, const char *user, const char *pass)
+static char *oauthbearer_base64(const char *user, const char *access_token)
 {
-	die("If you want to use CRAM-MD5 authenticate method, "
-	    "you have to build git-imap-send with OpenSSL library.");
+	int b64_len;
+	char *raw, *b64;
+
+	/*
+	 * Compose the OAUTHBEARER string
+	 *
+	 * "n,a=" {User} ",^Ahost=" {Host} "^Aport=" {Port} "^Aauth=Bearer " {Access Token} "^A^A
+	 *
+	 * The first part `n,a=" {User} ",` is the gs2 header described in RFC5801.
+	 * * gs2-cb-flag `n` -> client does not support CB
+	 * * gs2-authzid `a=" {User} "`
+	 *
+	 * The second part are key value pairs containing host, port and auth as
+	 * described in RFC7628.
+	 *
+	 * https://datatracker.ietf.org/doc/html/rfc5801
+	 * https://datatracker.ietf.org/doc/html/rfc7628
+	 */
+	raw = xstrfmt("n,a=%s,\001auth=Bearer %s\001\001", user, access_token);
+
+	/* Base64 encode */
+	b64 = xmallocz(ENCODED_SIZE(strlen(raw)));
+	b64_len = EVP_EncodeBlock((unsigned char *)b64, (unsigned char *)raw, strlen(raw));
+	free(raw);
+
+	if (b64_len < 0) {
+		free(b64);
+		return NULL;
+	}
+	return b64;
 }
 
-#endif
+static char *xoauth2_base64(const char *user, const char *access_token)
+{
+	int b64_len;
+	char *raw, *b64;
 
-static int auth_cram_md5(struct imap_store *ctx, struct imap_cmd *cmd, const char *prompt)
+	/*
+	 * Compose the XOAUTH2 string
+	 * "user=" {User} "^Aauth=Bearer " {Access Token} "^A^A"
+	 * https://developers.google.com/workspace/gmail/imap/xoauth2-protocol#initial_client_response
+	 */
+	raw = xstrfmt("user=%s\001auth=Bearer %s\001\001", user, access_token);
+
+	/* Base64 encode */
+	b64 = xmallocz(ENCODED_SIZE(strlen(raw)));
+	b64_len = EVP_EncodeBlock((unsigned char *)b64, (unsigned char *)raw, strlen(raw));
+	free(raw);
+
+	if (b64_len < 0) {
+		free(b64);
+		return NULL;
+	}
+	return b64;
+}
+
+static int auth_plain(struct imap_store *ctx, const char *prompt UNUSED)
+{
+	int ret;
+	char *b64;
+
+	b64 = plain_base64(ctx->cfg->user, ctx->cfg->pass);
+	if (!b64)
+		return error("PLAIN: base64 encoding failed");
+
+	/* Send the base64-encoded response */
+	ret = socket_write(&ctx->imap->buf.sock, b64, strlen(b64));
+	if (ret != (int)strlen(b64)) {
+		free(b64);
+		return error("IMAP error: sending PLAIN response failed");
+	}
+
+	free(b64);
+	return 0;
+}
+
+static int auth_cram_md5(struct imap_store *ctx, const char *prompt)
 {
 	int ret;
 	char *response;
 
-	response = cram(prompt, server.user, server.pass);
+	response = cram(prompt, ctx->cfg->user, ctx->cfg->pass);
 
 	ret = socket_write(&ctx->imap->buf.sock, response, strlen(response));
-	if (ret != strlen(response))
-		return error("IMAP error: sending response failed");
+	if (ret != strlen(response)) {
+		free(response);
+		return error("IMAP error: sending CRAM-MD5 response failed");
+	}
 
 	free(response);
 
 	return 0;
 }
+
+static int auth_oauthbearer(struct imap_store *ctx, const char *prompt UNUSED)
+{
+	int ret;
+	char *b64;
+
+	b64 = oauthbearer_base64(ctx->cfg->user, ctx->cfg->pass);
+	if (!b64)
+		return error("OAUTHBEARER: base64 encoding failed");
+
+	/* Send the base64-encoded response */
+	ret = socket_write(&ctx->imap->buf.sock, b64, strlen(b64));
+	if (ret != (int)strlen(b64)) {
+		free(b64);
+		return error("IMAP error: sending OAUTHBEARER response failed");
+	}
+
+	free(b64);
+	return 0;
+}
+
+static int auth_xoauth2(struct imap_store *ctx, const char *prompt UNUSED)
+{
+	int ret;
+	char *b64;
+
+	b64 = xoauth2_base64(ctx->cfg->user, ctx->cfg->pass);
+	if (!b64)
+		return error("XOAUTH2: base64 encoding failed");
+
+	/* Send the base64-encoded response */
+	ret = socket_write(&ctx->imap->buf.sock, b64, strlen(b64));
+	if (ret != (int)strlen(b64)) {
+		free(b64);
+		return error("IMAP error: sending XOAUTH2 response failed");
+	}
+
+	free(b64);
+	return 0;
+}
+
+#else
+
+#define auth_plain NULL
+#define auth_cram_md5 NULL
+#define auth_oauthbearer NULL
+#define auth_xoauth2 NULL
+
+#endif
 
 static void server_fill_credential(struct imap_server_conf *srvc, struct credential *cred)
 {
@@ -942,17 +1100,49 @@ static void server_fill_credential(struct imap_server_conf *srvc, struct credent
 		return;
 
 	cred->protocol = xstrdup(srvc->use_ssl ? "imaps" : "imap");
-	cred->host = xstrdup(srvc->host);
+	cred->host = xstrfmt("%s:%d", srvc->host, srvc->port);
 
 	cred->username = xstrdup_or_null(srvc->user);
 	cred->password = xstrdup_or_null(srvc->pass);
 
-	credential_fill(cred);
+	credential_fill(the_repository, cred, 1);
 
 	if (!srvc->user)
 		srvc->user = xstrdup(cred->username);
 	if (!srvc->pass)
 		srvc->pass = xstrdup(cred->password);
+}
+
+static int try_auth_method(struct imap_server_conf *srvc,
+			   struct imap_store *ctx,
+			   struct imap *imap,
+			   const char *auth_method,
+			   enum CAPABILITY cap,
+			   int (*fn)(struct imap_store *, const char *))
+{
+	struct imap_cmd_cb cb = {0};
+
+	if (!CAP(cap)) {
+		fprintf(stderr, "You specified "
+			"%s as authentication method, "
+			"but %s doesn't support it.\n",
+			auth_method, srvc->host);
+		return -1;
+	}
+	cb.cont = fn;
+
+	if (NOT_CONSTANT(!cb.cont)) {
+		fprintf(stderr, "If you want to use %s authentication mechanism, "
+			"you have to build git-imap-send with OpenSSL library.",
+			auth_method);
+		return -1;
+	}
+	if (imap_exec(ctx, &cb, "AUTHENTICATE %s", auth_method) != RESP_OK) {
+		fprintf(stderr, "IMAP error: AUTHENTICATE %s failed\n",
+			auth_method);
+		return -1;
+	}
+	return 0;
 }
 
 static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const char *folder)
@@ -963,9 +1153,10 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 	char *arg, *rsp;
 	int s = -1, preauth;
 
-	ctx = xcalloc(1, sizeof(*ctx));
+	CALLOC_ARRAY(ctx, 1);
 
-	ctx->imap = imap = xcalloc(1, sizeof(*imap));
+	ctx->cfg = srvc;
+	ctx->imap = CALLOC_ARRAY(imap, 1);
 	imap->buf.sock.fd[0] = imap->buf.sock.fd[1] = -1;
 	imap->in_progress_append = &imap->in_progress;
 
@@ -986,7 +1177,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 		imap->buf.sock.fd[0] = tunnel.out;
 		imap->buf.sock.fd[1] = tunnel.in;
 
-		imap_info("ok\n");
+		imap_info("OK\n");
 	} else {
 #ifndef NO_IPV6
 		struct addrinfo hints, *ai0, *ai;
@@ -1005,7 +1196,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 			fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(gai));
 			goto bail;
 		}
-		imap_info("ok\n");
+		imap_info("OK\n");
 
 		for (ai0 = ai; ai; ai = ai->ai_next) {
 			char addr[NI_MAXHOST];
@@ -1043,7 +1234,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 			perror("gethostbyname");
 			goto bail;
 		}
-		imap_info("ok\n");
+		imap_info("OK\n");
 
 		addr.sin_addr.s_addr = *((int *) he->h_addr_list[0]);
 
@@ -1057,7 +1248,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 		}
 #endif
 		if (s < 0) {
-			fputs("Error: unable to connect to server.\n", stderr);
+			fputs("error: unable to connect to server\n", stderr);
 			goto bail;
 		}
 
@@ -1065,11 +1256,11 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 		imap->buf.sock.fd[1] = dup(s);
 
 		if (srvc->use_ssl &&
-		    ssl_socket_connect(&imap->buf.sock, 0, srvc->ssl_verify)) {
+		    ssl_socket_connect(&imap->buf.sock, srvc, 0)) {
 			close(s);
 			goto bail;
 		}
-		imap_info("ok\n");
+		imap_info("OK\n");
 	}
 
 	/* read the greeting string */
@@ -1098,8 +1289,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 		if (!srvc->use_ssl && CAP(STARTTLS)) {
 			if (imap_exec(ctx, NULL, "STARTTLS") != RESP_OK)
 				goto bail;
-			if (ssl_socket_connect(&imap->buf.sock, 1,
-					       srvc->ssl_verify))
+			if (ssl_socket_connect(&imap->buf.sock, srvc, 1))
 				goto bail;
 			/* capabilities may have changed, so get the new capabilities */
 			if (imap_exec(ctx, NULL, "CAPABILITY") != RESP_OK)
@@ -1110,30 +1300,25 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 		server_fill_credential(srvc, &cred);
 
 		if (srvc->auth_method) {
-			struct imap_cmd_cb cb;
-
-			if (!strcmp(srvc->auth_method, "CRAM-MD5")) {
-				if (!CAP(AUTH_CRAM_MD5)) {
-					fprintf(stderr, "You specified "
-						"CRAM-MD5 as authentication method, "
-						"but %s doesn't support it.\n", srvc->host);
+			if (!strcmp(srvc->auth_method, "PLAIN")) {
+				if (try_auth_method(srvc, ctx, imap, "PLAIN", AUTH_PLAIN, auth_plain))
 					goto bail;
-				}
-				/* CRAM-MD5 */
-
-				memset(&cb, 0, sizeof(cb));
-				cb.cont = auth_cram_md5;
-				if (imap_exec(ctx, &cb, "AUTHENTICATE CRAM-MD5") != RESP_OK) {
-					fprintf(stderr, "IMAP error: AUTHENTICATE CRAM-MD5 failed\n");
+			} else if (!strcmp(srvc->auth_method, "CRAM-MD5")) {
+				if (try_auth_method(srvc, ctx, imap, "CRAM-MD5", AUTH_CRAM_MD5, auth_cram_md5))
 					goto bail;
-				}
+			} else if (!strcmp(srvc->auth_method, "OAUTHBEARER")) {
+				if (try_auth_method(srvc, ctx, imap, "OAUTHBEARER", AUTH_OAUTHBEARER, auth_oauthbearer))
+					goto bail;
+			} else if (!strcmp(srvc->auth_method, "XOAUTH2")) {
+				if (try_auth_method(srvc, ctx, imap, "XOAUTH2", AUTH_XOAUTH2, auth_xoauth2))
+					goto bail;
 			} else {
-				fprintf(stderr, "Unknown authentication method:%s\n", srvc->host);
+				fprintf(stderr, "unknown authentication mechanism: %s\n", srvc->auth_method);
 				goto bail;
 			}
 		} else {
 			if (CAP(NOLOGIN)) {
-				fprintf(stderr, "Skipping account %s@%s, server forbids LOGIN\n",
+				fprintf(stderr, "skipping account %s@%s, server forbids LOGIN\n",
 					srvc->user, srvc->host);
 				goto bail;
 			}
@@ -1148,7 +1333,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 	} /* !preauth */
 
 	if (cred.username)
-		credential_approve(&cred);
+		credential_approve(the_repository, &cred);
 	credential_clear(&cred);
 
 	/* check the target mailbox exists */
@@ -1175,7 +1360,7 @@ static struct imap_store *imap_open_store(struct imap_server_conf *srvc, const c
 
 bail:
 	if (cred.username)
-		credential_reject(&cred);
+		credential_reject(the_repository, &cred);
 	credential_clear(&cred);
 
  out:
@@ -1234,7 +1419,8 @@ static int imap_store_msg(struct imap_store *ctx, struct strbuf *msg)
 
 	box = ctx->name;
 	prefix = !strcmp(box, "INBOX") ? "" : ctx->prefix;
-	ret = imap_exec_m(ctx, &cb, "APPEND \"%s%s\" ", prefix, box);
+	ret = imap_exec_m(ctx, &cb, "APPEND \"%s%s\" %s", prefix, box,
+			  opt_draft ? "(\\Draft) " : "");
 	imap->caps = imap->rcaps;
 	if (ret != DRV_OK)
 		return ret;
@@ -1245,9 +1431,9 @@ static int imap_store_msg(struct imap_store *ctx, struct strbuf *msg)
 static void wrap_in_html(struct strbuf *msg)
 {
 	struct strbuf buf = STRBUF_INIT;
-	static char *content_type = "Content-Type: text/html;\n";
-	static char *pre_open = "<pre>\n";
-	static char *pre_close = "</pre>\n";
+	static const char *content_type = "Content-Type: text/html;\n";
+	static const char *pre_open = "<pre>\n";
+	static const char *pre_close = "</pre>\n";
 	const char *body = strstr(msg->buf, "\n\n");
 
 	if (!body)
@@ -1266,18 +1452,6 @@ static void wrap_in_html(struct strbuf *msg)
 	*msg = buf;
 }
 
-#define CHUNKSIZE 0x1000
-
-static int read_message(FILE *f, struct strbuf *all_msgs)
-{
-	do {
-		if (strbuf_fread(all_msgs, CHUNKSIZE, f) <= 0)
-			break;
-	} while (!feof(f));
-
-	return ferror(f) ? -1 : 0;
-}
-
 static int count_messages(struct strbuf *all_msgs)
 {
 	int count = 0;
@@ -1285,14 +1459,24 @@ static int count_messages(struct strbuf *all_msgs)
 
 	while (1) {
 		if (starts_with(p, "From ")) {
-			p = strstr(p+5, "\nFrom: ");
-			if (!p) break;
-			p = strstr(p+7, "\nDate: ");
-			if (!p) break;
-			p = strstr(p+7, "\nSubject: ");
-			if (!p) break;
-			p += 10;
-			count++;
+			if (starts_with(p, "From git-send-email")) {
+				p = strstr(p+5, "\nFrom: ");
+				if (!p) break;
+				p += 7;
+				p = strstr(p, "\nTo: ");
+				if (!p) break;
+				p += 5;
+				count++;
+			} else {
+				p = strstr(p+5, "\nFrom: ");
+				if (!p) break;
+				p = strstr(p+7, "\nDate: ");
+				if (!p) break;
+				p = strstr(p+7, "\nSubject: ");
+				if (!p) break;
+				p += 10;
+				count++;
+			}
 		}
 		p = strstr(p+5, "\nFrom ");
 		if (!p)
@@ -1338,41 +1522,49 @@ static int split_msg(struct strbuf *all_msgs, struct strbuf *msg, int *ofs)
 	return 1;
 }
 
-static int git_imap_config(const char *var, const char *val, void *cb)
+static int git_imap_config(const char *var, const char *val,
+			   const struct config_context *ctx, void *cb)
 {
+	struct imap_server_conf *cfg = cb;
 
-	if (!strcmp("imap.sslverify", var))
-		server.ssl_verify = git_config_bool(var, val);
-	else if (!strcmp("imap.preformattedhtml", var))
-		server.use_html = git_config_bool(var, val);
-	else if (!strcmp("imap.folder", var))
-		return git_config_string(&server.folder, var, val);
-	else if (!strcmp("imap.user", var))
-		return git_config_string(&server.user, var, val);
-	else if (!strcmp("imap.pass", var))
-		return git_config_string(&server.pass, var, val);
-	else if (!strcmp("imap.tunnel", var))
-		return git_config_string(&server.tunnel, var, val);
-	else if (!strcmp("imap.authmethod", var))
-		return git_config_string(&server.auth_method, var, val);
-	else if (!strcmp("imap.port", var))
-		server.port = git_config_int(var, val);
-	else if (!strcmp("imap.host", var)) {
+	if (!strcmp("imap.sslverify", var)) {
+		cfg->ssl_verify = git_config_bool(var, val);
+	} else if (!strcmp("imap.preformattedhtml", var)) {
+		cfg->use_html = git_config_bool(var, val);
+	} else if (!strcmp("imap.folder", var)) {
+		FREE_AND_NULL(cfg->folder);
+		return git_config_string(&cfg->folder, var, val);
+	} else if (!strcmp("imap.user", var)) {
+		FREE_AND_NULL(cfg->user);
+		return git_config_string(&cfg->user, var, val);
+	} else if (!strcmp("imap.pass", var)) {
+		FREE_AND_NULL(cfg->pass);
+		return git_config_string(&cfg->pass, var, val);
+	} else if (!strcmp("imap.tunnel", var)) {
+		FREE_AND_NULL(cfg->tunnel);
+		return git_config_string(&cfg->tunnel, var, val);
+	} else if (!strcmp("imap.authmethod", var)) {
+		FREE_AND_NULL(cfg->auth_method);
+		return git_config_string(&cfg->auth_method, var, val);
+	} else if (!strcmp("imap.port", var)) {
+		cfg->port = git_config_int(var, val, ctx->kvi);
+	} else if (!strcmp("imap.host", var)) {
 		if (!val) {
-			git_die_config("imap.host", "Missing value for 'imap.host'");
+			return config_error_nonbool(var);
 		} else {
 			if (starts_with(val, "imap:"))
 				val += 5;
 			else if (starts_with(val, "imaps:")) {
 				val += 6;
-				server.use_ssl = 1;
+				cfg->use_ssl = 1;
 			}
 			if (starts_with(val, "//"))
 				val += 2;
-			server.host = xstrdup(val);
+			cfg->host = xstrdup(val);
 		}
-	} else
-		return git_default_config(var, val, cb);
+	} else {
+		return git_default_config(var, val, ctx, cb);
+	}
 
 	return 0;
 }
@@ -1393,7 +1585,8 @@ static int append_msgs_to_imap(struct imap_server_conf *server,
 	}
 	ctx->name = server->folder;
 
-	fprintf(stderr, "sending %d message%s\n", total, (total != 1) ? "s" : "");
+	fprintf(stderr, "Sending %d message%s to %s folder...\n",
+		total, (total != 1) ? "s" : "", server->folder);
 	while (1) {
 		unsigned percent = n * 100 / total;
 
@@ -1415,6 +1608,26 @@ static int append_msgs_to_imap(struct imap_server_conf *server,
 	return 0;
 }
 
+static int list_imap_folders(struct imap_server_conf *server)
+{
+	struct imap_store *ctx = imap_open_store(server, "INBOX");
+	if (!ctx) {
+		fprintf(stderr, "failed to connect to IMAP server\n");
+		return 1;
+	}
+
+	fprintf(stderr, "Fetching the list of available folders...\n");
+	/* Issue the LIST command and print the results */
+	if (imap_exec(ctx, NULL, "LIST \"\" \"*\"") != RESP_OK) {
+		fprintf(stderr, "failed to list folders\n");
+		imap_close_store(ctx);
+		return 1;
+	}
+
+	imap_close_store(ctx);
+	return 0;
+}
+
 #ifdef USE_CURL_FOR_IMAP_SEND
 static CURL *setup_curl(struct imap_server_conf *srvc, struct credential *cred)
 {
@@ -1430,46 +1643,60 @@ static CURL *setup_curl(struct imap_server_conf *srvc, struct credential *cred)
 	if (!curl)
 		die("curl_easy_init failed");
 
-	server_fill_credential(&server, cred);
-	curl_easy_setopt(curl, CURLOPT_USERNAME, server.user);
-	curl_easy_setopt(curl, CURLOPT_PASSWORD, server.pass);
+	server_fill_credential(srvc, cred);
+	curl_easy_setopt(curl, CURLOPT_USERNAME, srvc->user);
 
-	strbuf_addstr(&path, server.use_ssl ? "imaps://" : "imap://");
-	strbuf_addstr(&path, server.host);
+	/*
+	 * Use CURLOPT_PASSWORD irrespective of whether there is
+	 * an auth method specified or not, unless it's OAuth2.0,
+	 * where we use CURLOPT_XOAUTH2_BEARER.
+	 */
+	if (!srvc->auth_method ||
+	    (strcmp(srvc->auth_method, "XOAUTH2") &&
+	    strcmp(srvc->auth_method, "OAUTHBEARER")))
+		curl_easy_setopt(curl, CURLOPT_PASSWORD, srvc->pass);
+
+	strbuf_addstr(&path, srvc->use_ssl ? "imaps://" : "imap://");
+	strbuf_addstr(&path, srvc->host);
 	if (!path.len || path.buf[path.len - 1] != '/')
 		strbuf_addch(&path, '/');
 
-	uri_encoded_folder = curl_easy_escape(curl, server.folder, 0);
-	if (!uri_encoded_folder)
-		die("failed to encode server folder");
-	strbuf_addstr(&path, uri_encoded_folder);
-	curl_free(uri_encoded_folder);
+	if (!list_folders) {
+		uri_encoded_folder = curl_easy_escape(curl, srvc->folder, 0);
+		if (!uri_encoded_folder)
+			die("failed to encode server folder");
+		strbuf_addstr(&path, uri_encoded_folder);
+		curl_free(uri_encoded_folder);
+	}
 
 	curl_easy_setopt(curl, CURLOPT_URL, path.buf);
 	strbuf_release(&path);
-	curl_easy_setopt(curl, CURLOPT_PORT, server.port);
+	curl_easy_setopt(curl, CURLOPT_PORT, (long)srvc->port);
 
-	if (server.auth_method) {
-#if LIBCURL_VERSION_NUM < 0x072200
-		warning("No LOGIN_OPTIONS support in this cURL version");
-#else
-		struct strbuf auth = STRBUF_INIT;
-		strbuf_addstr(&auth, "AUTH=");
-		strbuf_addstr(&auth, server.auth_method);
-		curl_easy_setopt(curl, CURLOPT_LOGIN_OPTIONS, auth.buf);
-		strbuf_release(&auth);
-#endif
+	if (srvc->auth_method) {
+		if (!strcmp(srvc->auth_method, "XOAUTH2") ||
+		    !strcmp(srvc->auth_method, "OAUTHBEARER")) {
+
+			/*
+			 * While CURLOPT_XOAUTH2_BEARER looks as if it only supports XOAUTH2,
+			 * upon debugging, it has been found that it is capable of detecting
+			 * the best option out of OAUTHBEARER and XOAUTH2.
+			 */
+			curl_easy_setopt(curl, CURLOPT_XOAUTH2_BEARER, srvc->pass);
+		} else {
+			struct strbuf auth = STRBUF_INIT;
+			strbuf_addstr(&auth, "AUTH=");
+			strbuf_addstr(&auth, srvc->auth_method);
+			curl_easy_setopt(curl, CURLOPT_LOGIN_OPTIONS, auth.buf);
+			strbuf_release(&auth);
+		}
 	}
 
-	if (!server.use_ssl)
+	if (!srvc->use_ssl)
 		curl_easy_setopt(curl, CURLOPT_USE_SSL, (long)CURLUSESSL_TRY);
 
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, server.ssl_verify);
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, server.ssl_verify);
-
-	curl_easy_setopt(curl, CURLOPT_READFUNCTION, fread_buffer);
-
-	curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, (long)srvc->ssl_verify);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, (long)srvc->ssl_verify);
 
 	if (0 < verbosity || getenv("GIT_CURL_VERBOSE"))
 		http_trace_curl_no_data();
@@ -1489,9 +1716,21 @@ static int curl_append_msgs_to_imap(struct imap_server_conf *server,
 	struct credential cred = CREDENTIAL_INIT;
 
 	curl = setup_curl(server, &cred);
+
+	curl_easy_setopt(curl, CURLOPT_READFUNCTION, fread_buffer);
+	curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+
 	curl_easy_setopt(curl, CURLOPT_READDATA, &msgbuf);
 
-	fprintf(stderr, "sending %d message%s\n", total, (total != 1) ? "s" : "");
+	if (opt_draft) {
+#ifdef GIT_CURL_HAVE_CURLOPT_UPLOAD_FLAGS
+		curl_easy_setopt(curl, CURLOPT_UPLOAD_FLAGS, CURLULFLAG_DRAFT);
+#else
+		warning("--draft requires libcurl 8.13.0 or later");
+#endif
+	}
+	fprintf(stderr, "Sending %d message%s to %s folder...\n",
+		total, (total != 1) ? "s" : "", server->folder);
 	while (1) {
 		unsigned percent = n * 100 / total;
 		int prev_len;
@@ -1506,7 +1745,7 @@ static int curl_append_msgs_to_imap(struct imap_server_conf *server,
 		lf_to_crlf(&msgbuf.buf);
 
 		curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE,
-				 (curl_off_t)(msgbuf.buf.len-prev_len));
+				 cast_size_t_to_curl_off_t(msgbuf.buf.len-prev_len));
 
 		res = curl_easy_perform(curl);
 
@@ -1522,16 +1761,38 @@ static int curl_append_msgs_to_imap(struct imap_server_conf *server,
 
 	curl_easy_cleanup(curl);
 	curl_global_cleanup();
+	strbuf_release(&msgbuf.buf);
 
 	if (cred.username) {
 		if (res == CURLE_OK)
-			credential_approve(&cred);
-#if LIBCURL_VERSION_NUM >= 0x070d01
+			credential_approve(the_repository, &cred);
 		else if (res == CURLE_LOGIN_DENIED)
-#else
-		else
-#endif
-			credential_reject(&cred);
+			credential_reject(the_repository, &cred);
+	}
+
+	credential_clear(&cred);
+
+	return res != CURLE_OK;
+}
+
+static int curl_list_imap_folders(struct imap_server_conf *server)
+{
+	CURL *curl;
+	CURLcode res = CURLE_OK;
+	struct credential cred = CREDENTIAL_INIT;
+
+	fprintf(stderr, "Fetching the list of available folders...\n");
+	curl = setup_curl(server, &cred);
+	res = curl_easy_perform(curl);
+
+	curl_easy_cleanup(curl);
+	curl_global_cleanup();
+
+	if (cred.username) {
+		if (res == CURLE_OK)
+			credential_approve(the_repository, &cred);
+		else if (res == CURLE_LOGIN_DENIED)
+			credential_reject(the_repository, &cred);
 	}
 
 	credential_clear(&cred);
@@ -1542,14 +1803,23 @@ static int curl_append_msgs_to_imap(struct imap_server_conf *server,
 
 int cmd_main(int argc, const char **argv)
 {
+	struct imap_server_conf server = {
+		.ssl_verify = 1,
+	};
 	struct strbuf all_msgs = STRBUF_INIT;
 	int total;
 	int nongit_ok;
+	int ret;
 
-	setup_git_directory_gently(&nongit_ok);
-	git_config(git_imap_config, NULL);
+	setup_git_directory_gently(the_repository, &nongit_ok);
+	repo_config(the_repository, git_imap_config, &server);
 
 	argc = parse_options(argc, (const char **)argv, "", imap_send_options, imap_send_usage, 0);
+
+	if (opt_folder) {
+		free(server.folder);
+		server.folder = xstrdup(opt_folder);
+	}
 
 	if (argc)
 		usage_with_options(imap_send_usage, imap_send_options);
@@ -1569,44 +1839,75 @@ int cmd_main(int argc, const char **argv)
 	if (!server.port)
 		server.port = server.use_ssl ? 993 : 143;
 
-	if (!server.folder) {
-		fprintf(stderr, "no imap store specified\n");
-		return 1;
-	}
 	if (!server.host) {
 		if (!server.tunnel) {
-			fprintf(stderr, "no imap host specified\n");
-			return 1;
+			error(_("no IMAP host specified"));
+			advise(_("set the IMAP host with 'git config imap.host <host>'.\n"
+				 "(e.g., 'git config imap.host imaps://imap.example.com')"));
+			ret = 1;
+			goto out;
 		}
-		server.host = "tunnel";
+		server.host = xstrdup("tunnel");
+	}
+
+	if (list_folders) {
+		if (server.tunnel)
+			ret = list_imap_folders(&server);
+#ifdef USE_CURL_FOR_IMAP_SEND
+		else if (use_curl)
+			ret = curl_list_imap_folders(&server);
+#endif
+		else
+			ret = list_imap_folders(&server);
+		goto out;
+	}
+
+	if (!server.folder) {
+		error(_("no IMAP folder specified"));
+		advise(_("set the target folder with 'git config imap.folder <folder>'.\n"
+			 "(e.g., 'git config imap.folder Drafts')"));
+		ret = 1;
+		goto out;
 	}
 
 	/* read the messages */
-	if (read_message(stdin, &all_msgs)) {
-		fprintf(stderr, "error reading input\n");
-		return 1;
+	if (strbuf_read(&all_msgs, 0, 0) < 0) {
+		error_errno(_("could not read from stdin"));
+		ret = 1;
+		goto out;
 	}
 
 	if (all_msgs.len == 0) {
 		fprintf(stderr, "nothing to send\n");
-		return 1;
+		ret = 1;
+		goto out;
 	}
 
 	total = count_messages(&all_msgs);
 	if (!total) {
-		fprintf(stderr, "no messages to send\n");
-		return 1;
+		fprintf(stderr, "no messages found to send\n");
+		ret = 1;
+		goto out;
 	}
 
 	/* write it to the imap server */
 
 	if (server.tunnel)
-		return append_msgs_to_imap(&server, &all_msgs, total);
-
+		ret = append_msgs_to_imap(&server, &all_msgs, total);
 #ifdef USE_CURL_FOR_IMAP_SEND
-	if (use_curl)
-		return curl_append_msgs_to_imap(&server, &all_msgs, total);
+	else if (use_curl)
+		ret = curl_append_msgs_to_imap(&server, &all_msgs, total);
 #endif
+	else
+		ret = append_msgs_to_imap(&server, &all_msgs, total);
 
-	return append_msgs_to_imap(&server, &all_msgs, total);
+out:
+	free(server.tunnel);
+	free(server.host);
+	free(server.folder);
+	free(server.user);
+	free(server.pass);
+	free(server.auth_method);
+	strbuf_release(&all_msgs);
+	return ret;
 }

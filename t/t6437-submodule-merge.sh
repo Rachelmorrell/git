@@ -2,6 +2,9 @@
 
 test_description='merging with submodules'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 #
@@ -27,7 +30,7 @@ test_expect_success setup '
 	test_tick &&
 	git commit -m root &&
 
-	git checkout -b a master &&
+	git checkout -b a main &&
 	(cd sub &&
 	 echo A > file &&
 	 git add file &&
@@ -37,7 +40,7 @@ test_expect_success setup '
 	test_tick &&
 	git commit -m a &&
 
-	git checkout -b b master &&
+	git checkout -b b main &&
 	(cd sub &&
 	 echo B > file &&
 	 git add file &&
@@ -96,8 +99,21 @@ test_expect_success 'setup for merge search' '
 	 echo "file-c" > file-c &&
 	 git add file-c &&
 	 git commit -m "sub-c") &&
-	git commit -a -m "c" &&
+	git commit -a -m "c")
+'
 
+test_expect_success 'merging should conflict for non fast-forward' '
+	test_when_finished "git -C merge-search reset --hard" &&
+	(cd merge-search &&
+	 git checkout -b test-nonforward-a b &&
+	 test_must_fail git merge c 2>actual &&
+	 sub_expect="go to submodule (sub), and either merge commit $(git -C sub rev-parse --short sub-c)" &&
+	 test_grep "$sub_expect" actual
+	 )
+'
+
+test_expect_success 'finish setup for merge-search' '
+	(cd merge-search &&
 	git checkout -b d a &&
 	(cd sub &&
 	 git checkout -b sub-d sub-b &&
@@ -122,17 +138,14 @@ test_expect_success 'merge with one side as a fast-forward of the other' '
 	 test_cmp expect actual)
 '
 
-test_expect_success 'merging should conflict for non fast-forward' '
+test_expect_success 'merging should conflict for non fast-forward (resolution exists)' '
 	(cd merge-search &&
-	 git checkout -b test-nonforward b &&
+	 git checkout -b test-nonforward-b b &&
 	 (cd sub &&
-	  git rev-parse sub-d > ../expect) &&
-	  if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-	  then
-		test_must_fail git merge c >actual
-	  else
-		test_must_fail git merge c 2> actual
-	  fi &&
+	  git rev-parse --short sub-d > ../expect) &&
+	  test_must_fail git merge c >actual 2>sub-actual &&
+	  sub_expect="go to submodule (sub), and either merge commit $(git -C sub rev-parse --short sub-c)" &&
+	  test_grep "$sub_expect" sub-actual &&
 	 grep $(cat expect) actual > /dev/null &&
 	 git reset --hard)
 '
@@ -143,21 +156,12 @@ test_expect_success 'merging should fail for ambiguous common parent' '
 	(cd sub &&
 	 git checkout -b ambiguous sub-b &&
 	 git merge sub-c &&
-	 if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-	 then
-		git rev-parse --short sub-d >../expect1 &&
-		git rev-parse --short ambiguous >../expect2
-	 else
-		git rev-parse sub-d > ../expect1 &&
-		git rev-parse ambiguous > ../expect2
-	 fi
+	 git rev-parse --short sub-d >../expect1 &&
+	 git rev-parse --short ambiguous >../expect2
 	 ) &&
-	 if test "$GIT_TEST_MERGE_ALGORITHM" = ort
-	 then
-		test_must_fail git merge c >actual
-	 else
-		test_must_fail git merge c 2> actual
-	 fi &&
+	test_must_fail git merge c >actual 2>sub-actual &&
+	sub_expect="go to submodule (sub), and either merge commit $(git -C sub rev-parse --short sub-c)" &&
+	test_grep "$sub_expect" sub-actual &&
 	grep $(cat expect1) actual > /dev/null &&
 	grep $(cat expect2) actual > /dev/null &&
 	git reset --hard)
@@ -198,7 +202,10 @@ test_expect_success 'merging should fail for changes that are backwards' '
 	git commit -a -m "f" &&
 
 	git checkout -b test-backward e &&
-	test_must_fail git merge f)
+	test_must_fail git merge f 2>actual &&
+	sub_expect="go to submodule (sub), and either merge commit $(git -C sub rev-parse --short sub-d)" &&
+	test_grep "$sub_expect" actual
+	)
 '
 
 
@@ -254,22 +261,22 @@ test_expect_success 'setup for recursive merge with submodule' '
 	 (cd sub &&
 	  git init &&
 	  test_commit a &&
-	  git checkout -b sub-b master &&
+	  git checkout -b sub-b main &&
 	  test_commit b &&
-	  git checkout -b sub-c master &&
+	  git checkout -b sub-c main &&
 	  test_commit c &&
 	  git checkout -b sub-bc sub-b &&
 	  git merge sub-c &&
 	  git checkout -b sub-cb sub-c &&
 	  git merge sub-b &&
-	  git checkout master) &&
+	  git checkout main) &&
 	 git add sub &&
 	 git commit -m a &&
-	 git checkout -b top-b master &&
+	 git checkout -b top-b main &&
 	 (cd sub && git checkout sub-b) &&
 	 git add sub &&
 	 git commit -m b &&
-	 git checkout -b top-c master &&
+	 git checkout -b top-c main &&
 	 (cd sub && git checkout sub-c) &&
 	 git add sub &&
 	 git commit -m c &&
@@ -303,7 +310,7 @@ test_expect_success 'recursive merge with submodule' '
 #   Expected: path/ is submodule and file contents for B's path are somewhere
 
 test_expect_success 'setup file/submodule conflict' '
-	test_create_repo file-submodule &&
+	git init file-submodule &&
 	(
 		cd file-submodule &&
 
@@ -318,14 +325,14 @@ test_expect_success 'setup file/submodule conflict' '
 		git commit -m B &&
 
 		git checkout A &&
-		test_create_repo path &&
+		git init path &&
 		test_commit -C path world &&
 		git submodule add ./path &&
 		git commit -m A
 	)
 '
 
-test_expect_failure 'file/submodule conflict' '
+test_expect_success 'file/submodule conflict' '
 	test_when_finished "git -C file-submodule reset --hard" &&
 	(
 		cd file-submodule &&
@@ -378,7 +385,7 @@ test_expect_success 'file/submodule conflict; merge --abort works afterward' '
 #     under the submodule to be treated as untracked or in the way.
 
 test_expect_success 'setup directory/submodule conflict' '
-	test_create_repo directory-submodule &&
+	git init directory-submodule &&
 	(
 		cd directory-submodule &&
 
@@ -401,7 +408,7 @@ test_expect_success 'setup directory/submodule conflict' '
 		git commit -m B2 &&
 
 		git checkout A &&
-		test_create_repo path &&
+		git init path &&
 		test_commit -C path hello world &&
 		git submodule add ./path &&
 		git commit -m A
@@ -434,7 +441,7 @@ test_expect_failure 'directory/submodule conflict; keep submodule clean' '
 	)
 '
 
-test_expect_failure !FAIL_PREREQS 'directory/submodule conflict; should not treat submodule files as untracked or in the way' '
+test_expect_success !FAIL_PREREQS 'directory/submodule conflict; should not treat submodule files as untracked or in the way' '
 	test_when_finished "git -C directory-submodule/path reset --hard" &&
 	test_when_finished "git -C directory-submodule reset --hard" &&
 	(
@@ -446,7 +453,7 @@ test_expect_failure !FAIL_PREREQS 'directory/submodule conflict; should not trea
 		# We do not want files within the submodule to prevent the
 		# merge from starting; we should not be writing to such paths
 		# anyway.
-		test_i18ngrep ! "refusing to lose untracked file at" err
+		test_grep ! "refusing to lose untracked file at" err
 	)
 '
 
@@ -467,6 +474,130 @@ test_expect_failure 'directory/submodule conflict; merge --abort works afterward
 		git ls-files -u >conflicts &&
 		test_must_be_empty conflicts
 	)
+'
+
+# Setup:
+#   - Submodule has 2 commits: a and b
+#   - Superproject branch 'a' adds and commits submodule pointing to 'commit a'
+#   - Superproject branch 'b' adds and commits submodule pointing to 'commit b'
+# If these two branches are now merged, there is no merge base
+test_expect_success 'setup for null merge base' '
+	mkdir no-merge-base &&
+	(cd no-merge-base &&
+	git init &&
+	mkdir sub &&
+	(cd sub &&
+	 git init &&
+	 echo "file-a" > file-a &&
+	 git add file-a &&
+	 git commit -m "commit a") &&
+	git commit --allow-empty -m init &&
+	git branch init &&
+	git checkout -b a init &&
+	git add sub &&
+	git commit -m "a" &&
+	git switch main &&
+	(cd sub &&
+	 echo "file-b" > file-b &&
+	 git add file-b &&
+	 git commit -m "commit b"))
+'
+
+test_expect_success 'merging should fail with no merge base' '
+	(cd no-merge-base &&
+	git checkout -b b init &&
+	git add sub &&
+	git commit -m "b" &&
+	test_must_fail git merge a 2>actual &&
+	sub_expect="go to submodule (sub), and either merge commit $(git -C sub rev-parse --short HEAD^1)" &&
+	test_grep "$sub_expect" actual
+	)
+'
+
+test_expect_success 'setup for commit-graphs in superproject and submodule' '
+	git init commit-graph &&
+	(cd commit-graph &&
+	git init sub &&
+	for i in 1 2 3 4 5 6 7 8 9 10
+	do
+		test_commit -C sub "sub-$i" || return 1
+	done &&
+
+	git -C sub checkout --detach sub-1 &&
+	git add sub &&
+	git commit -m base &&
+
+	# Write the commit-graph of the superproject while it only
+	# contains a single commit. Any commit-graph position of the
+	# submodule is thus out of bounds for the superproject.
+	git commit-graph write --reachable &&
+
+	git checkout -b side &&
+	git -C sub checkout --detach sub-5 &&
+	git add sub &&
+	git commit -m side &&
+
+	git checkout main &&
+	git -C sub checkout --detach sub-10 &&
+	git add sub &&
+	git commit -m main &&
+
+	git -C sub commit-graph write --reachable)
+'
+
+test_expect_success 'merge does not mix up superproject and submodule commit-graphs' '
+	(cd commit-graph &&
+	git merge side &&
+	git rev-parse HEAD:sub >actual &&
+	git -C sub rev-parse sub-10^{commit} >expect &&
+	test_cmp expect actual)
+'
+
+test_expect_success 'merge with many packed submodules reports conflicts' '
+	test_config_global protocol.file.allow always &&
+
+	# Create 16 submodules with two divergent branches each.
+	submodules="A B C D E F G H I J K L M N O P" &&
+	for name in $submodules
+	do
+		git init source-$name &&
+		test_commit -C source-$name $name-main &&
+		git -C source-$name switch --create branch-a main &&
+		git -C source-$name commit --allow-empty --message $name-branch-a &&
+		git -C source-$name switch --create branch-b main &&
+		git -C source-$name commit --allow-empty --message $name-branch-b || return 1
+	done &&
+
+	# Create the superproject and add all submodules.
+	git init many-packed &&
+	for name in $submodules
+	do
+		git -C many-packed submodule add --branch main "file://$PWD/source-$name" $name || return 1
+	done &&
+	git -C many-packed commit --message main &&
+
+	# Create two divergent commits in the superproject that update all
+	# submodules to the divergent branches.
+	for branch in branch-a branch-b
+	do
+		git -C many-packed switch -c $branch main &&
+		for name in $submodules
+		do
+			git -C many-packed/$name switch $branch || return 1
+		done &&
+		git -C many-packed add $submodules &&
+		git -C many-packed commit --message $branch || return 1
+	done &&
+
+	# Clone the superproject to ensure that everything is well-packed and
+	# then merge the two branches, creating conflicts for every submodule.
+	git clone many-packed many-packed-clone &&
+	git -C many-packed-clone submodule update --init &&
+	git -C many-packed-clone switch branch-a &&
+	test_expect_code 1 git -C many-packed-clone -c advice.submoduleMergeConflict=false merge branch-b >out 2>err &&
+	grep "^CONFLICT (submodule)" out >conflicts &&
+	test_line_count = 16 conflicts &&
+	test_must_be_empty err
 '
 
 test_done

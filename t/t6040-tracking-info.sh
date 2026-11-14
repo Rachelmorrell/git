@@ -2,6 +2,9 @@
 
 test_description='remote tracking stats'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 advance () {
@@ -34,7 +37,7 @@ test_expect_success setup '
 		git branch -d brokenbase &&
 		git checkout -b b6 origin
 	) &&
-	git checkout -b follower --track master &&
+	git checkout -b follower --track main &&
 	advance h
 '
 
@@ -54,16 +57,16 @@ test_expect_success 'branch -v' '
 		git branch -v
 	) |
 	sed -n -e "$t6040_script" >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
-b1 [origin/master: ahead 1, behind 1] d
-b2 [origin/master: ahead 1, behind 1] d
-b3 [origin/master: behind 1] b
-b4 [origin/master: ahead 2] f
+b1 [origin/main: ahead 1, behind 1] d
+b2 [origin/main: ahead 1, behind 1] d
+b3 [origin/main: behind 1] b
+b4 [origin/main: ahead 2] f
 b5 [brokenbase: gone] g
-b6 [origin/master] c
+b6 [origin/main] c
 EOF
 
 test_expect_success 'branch -vv' '
@@ -72,20 +75,20 @@ test_expect_success 'branch -vv' '
 		git branch -vv
 	) |
 	sed -n -e "$t6040_script" >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'checkout (diverged from upstream)' '
 	(
 		cd test && git checkout b1
 	) >actual &&
-	test_i18ngrep "have 1 and 1 different" actual
+	test_grep "have 1 and 1 different" actual
 '
 
 test_expect_success 'checkout with local tracked branch' '
-	git checkout master &&
+	git checkout main &&
 	git checkout follower >actual &&
-	test_i18ngrep "is ahead of" actual
+	test_grep "is ahead of" actual
 '
 
 test_expect_success 'checkout (upstream is gone)' '
@@ -93,14 +96,14 @@ test_expect_success 'checkout (upstream is gone)' '
 		cd test &&
 		git checkout b5
 	) >actual &&
-	test_i18ngrep "is based on .*, but the upstream is gone." actual
+	test_grep "is based on .*, but the upstream is gone." actual
 '
 
 test_expect_success 'checkout (up-to-date with upstream)' '
 	(
 		cd test && git checkout b6
 	) >actual &&
-	test_i18ngrep "Your branch is up to date with .origin/master" actual
+	test_grep "Your branch is up to date with .origin/main" actual
 '
 
 test_expect_success 'status (diverged from upstream)' '
@@ -110,7 +113,7 @@ test_expect_success 'status (diverged from upstream)' '
 		# reports nothing to commit
 		test_must_fail git commit --dry-run
 	) >actual &&
-	test_i18ngrep "have 1 and 1 different" actual
+	test_grep "have 1 and 1 different" actual
 '
 
 test_expect_success 'status (upstream is gone)' '
@@ -120,7 +123,7 @@ test_expect_success 'status (upstream is gone)' '
 		# reports nothing to commit
 		test_must_fail git commit --dry-run
 	) >actual &&
-	test_i18ngrep "is based on .*, but the upstream is gone." actual
+	test_grep "is based on .*, but the upstream is gone." actual
 '
 
 test_expect_success 'status (up-to-date with upstream)' '
@@ -130,11 +133,11 @@ test_expect_success 'status (up-to-date with upstream)' '
 		# reports nothing to commit
 		test_must_fail git commit --dry-run
 	) >actual &&
-	test_i18ngrep "Your branch is up to date with .origin/master" actual
+	test_grep "Your branch is up to date with .origin/main" actual
 '
 
 cat >expect <<\EOF
-## b1...origin/master [ahead 1, behind 1]
+## b1...origin/main [ahead 1, behind 1]
 EOF
 
 test_expect_success 'status -s -b (diverged from upstream)' '
@@ -143,11 +146,11 @@ test_expect_success 'status -s -b (diverged from upstream)' '
 		git checkout b1 >/dev/null &&
 		git status -s -b | head -1
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
-## b1...origin/master [different]
+## b1...origin/main [different]
 EOF
 
 test_expect_success 'status -s -b --no-ahead-behind (diverged from upstream)' '
@@ -156,11 +159,11 @@ test_expect_success 'status -s -b --no-ahead-behind (diverged from upstream)' '
 		git checkout b1 >/dev/null &&
 		git status -s -b --no-ahead-behind | head -1
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
-## b1...origin/master [different]
+## b1...origin/main [different]
 EOF
 
 test_expect_success 'status.aheadbehind=false status -s -b (diverged from upstream)' '
@@ -169,12 +172,12 @@ test_expect_success 'status.aheadbehind=false status -s -b (diverged from upstre
 		git checkout b1 >/dev/null &&
 		git -c status.aheadbehind=false status -s -b | head -1
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
 On branch b1
-Your branch and 'origin/master' have diverged,
+Your branch and 'origin/main' have diverged,
 and have 1 and 1 different commits each, respectively.
 EOF
 
@@ -184,7 +187,7 @@ test_expect_success 'status --long --branch' '
 		git checkout b1 >/dev/null &&
 		git status --long -b | head -3
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'status --long --branch' '
@@ -193,12 +196,12 @@ test_expect_success 'status --long --branch' '
 		git checkout b1 >/dev/null &&
 		git -c status.aheadbehind=true status --long -b | head -3
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
 On branch b1
-Your branch and 'origin/master' refer to different commits.
+Your branch and 'origin/main' refer to different commits.
 EOF
 
 test_expect_success 'status --long --branch --no-ahead-behind' '
@@ -207,7 +210,7 @@ test_expect_success 'status --long --branch --no-ahead-behind' '
 		git checkout b1 >/dev/null &&
 		git status --long -b --no-ahead-behind | head -2
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'status.aheadbehind=false status --long --branch' '
@@ -216,7 +219,7 @@ test_expect_success 'status.aheadbehind=false status --long --branch' '
 		git checkout b1 >/dev/null &&
 		git -c status.aheadbehind=false status --long -b | head -2
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
@@ -229,11 +232,11 @@ test_expect_success 'status -s -b (upstream is gone)' '
 		git checkout b5 >/dev/null &&
 		git status -s -b | head -1
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
-## b6...origin/master
+## b6...origin/main
 EOF
 
 test_expect_success 'status -s -b (up-to-date with upstream)' '
@@ -242,37 +245,37 @@ test_expect_success 'status -s -b (up-to-date with upstream)' '
 		git checkout b6 >/dev/null &&
 		git status -s -b | head -1
 	) >actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'fail to track lightweight tags' '
-	git checkout master &&
+	git checkout main &&
 	git tag light &&
 	test_must_fail git branch --track lighttrack light >actual &&
-	test_i18ngrep ! "set up to track" actual &&
+	test_grep ! "set up to track" actual &&
 	test_must_fail git checkout lighttrack
 '
 
 test_expect_success 'fail to track annotated tags' '
-	git checkout master &&
+	git checkout main &&
 	git tag -m heavy heavy &&
 	test_must_fail git branch --track heavytrack heavy >actual &&
-	test_i18ngrep ! "set up to track" actual &&
+	test_grep ! "set up to track" actual &&
 	test_must_fail git checkout heavytrack
 '
 
 test_expect_success '--set-upstream-to does not change branch' '
-	git branch from-master master &&
-	git branch --set-upstream-to master from-master &&
-	git branch from-topic_2 master &&
+	git branch from-main main &&
+	git branch --set-upstream-to main from-main &&
+	git branch from-topic_2 main &&
 	test_must_fail git config branch.from-topic_2.merge > actual &&
 	git rev-list from-topic_2 &&
 	git update-ref refs/heads/from-topic_2 from-topic_2^ &&
 	git rev-parse from-topic_2 >expect2 &&
-	git branch --set-upstream-to master from-topic_2 &&
-	git config branch.from-master.merge > actual &&
+	git branch --set-upstream-to main from-topic_2 &&
+	git config branch.from-main.merge > actual &&
 	git rev-parse from-topic_2 >actual2 &&
-	grep -q "^refs/heads/master$" actual &&
+	test_grep -q "^refs/heads/main$" actual &&
 	cmp expect2 actual2
 '
 
@@ -280,12 +283,466 @@ test_expect_success '--set-upstream-to @{-1}' '
 	git checkout follower &&
 	git checkout from-topic_2 &&
 	git config branch.from-topic_2.merge > expect2 &&
-	git branch --set-upstream-to @{-1} from-master &&
-	git config branch.from-master.merge > actual &&
+	git branch --set-upstream-to @{-1} from-main &&
+	git config branch.from-main.merge > actual &&
 	git config branch.from-topic_2.merge > actual2 &&
-	git branch --set-upstream-to follower from-master &&
-	git config branch.from-master.merge > expect &&
+	git branch --set-upstream-to follower from-main &&
+	git config branch.from-main.merge > expect &&
 	test_cmp expect2 actual2 &&
+	test_cmp expect actual
+'
+
+test_expect_success 'status tracking origin/main shows only main' '
+	git -C test checkout b4 &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch b4
+	Your branch is ahead of ${SQ}origin/main${SQ} by 2 commits.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status --no-ahead-behind tracking origin/main shows only main' '
+	git -C test checkout b4 &&
+	git -C test status --no-ahead-behind >actual &&
+	cat >expect <<-EOF &&
+	On branch b4
+	Your branch and ${SQ}origin/main${SQ} refer to different commits.
+	  (use "git status --ahead-behind" for details)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches deduplicates when upstream and push are the same' '
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout main &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch main
+	Your branch is up to date with ${SQ}origin/main${SQ}.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with only upstream shows only upstream' '
+	test_config -C test status.compareBranches "@{upstream}" &&
+	git -C test checkout main &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch main
+	Your branch is up to date with ${SQ}origin/main${SQ}.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with only push shows only push' '
+	test_config -C test push.default current &&
+	test_config -C test status.compareBranches "@{push}" &&
+	git -C test checkout -b feature2 origin/main &&
+	git -C test push origin HEAD &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature2
+	Your branch is ahead of ${SQ}origin/feature2${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches shows ahead of both upstream and push branch' '
+	test_config -C test push.default current &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature3 origin/main &&
+	git -C test push origin HEAD &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature3
+	Your branch is ahead of ${SQ}origin/main${SQ} by 1 commit.
+
+	Your branch is ahead of ${SQ}origin/feature3${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'checkout with status.compareBranches shows both branches' '
+	test_config -C test push.default current &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout feature3 >actual &&
+	cat >expect <<-EOF &&
+	Your branch is ahead of ${SQ}origin/main${SQ} by 1 commit.
+
+	Your branch is ahead of ${SQ}origin/feature3${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'setup for ahead of tracked but diverged from main' '
+	(
+		cd test &&
+		git checkout -b feature4 origin/main &&
+		advance work1 &&
+		git checkout origin/main &&
+		advance work2 &&
+		git push origin HEAD:main &&
+		git checkout feature4 &&
+		advance work3
+	)
+'
+
+test_expect_success 'status.compareBranches shows diverged and ahead' '
+	test_config -C test push.default current &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout feature4 &&
+	git -C test branch --set-upstream-to origin/main &&
+	git -C test push origin HEAD &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature4
+	Your branch and ${SQ}origin/main${SQ} have diverged,
+	and have 3 and 1 different commits each, respectively.
+	  (use "git pull" if you want to integrate the remote branch with yours)
+
+	Your branch is ahead of ${SQ}origin/feature4${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status --no-ahead-behind with status.compareBranches' '
+	test_config -C test push.default current &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout feature4 &&
+	git -C test status --no-ahead-behind >actual &&
+	cat >expect <<-EOF &&
+	On branch feature4
+	Your branch and ${SQ}origin/main${SQ} refer to different commits.
+
+	Your branch and ${SQ}origin/feature4${SQ} refer to different commits.
+	  (use "git status --ahead-behind" for details)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'setup upstream remote' '
+	(
+		cd test &&
+		git remote add upstream ../. &&
+		git fetch upstream
+	)
+'
+
+test_expect_success 'status.compareBranches with upstream and origin remotes' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature5 upstream/main &&
+	git -C test push origin &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature5
+	Your branch is ahead of ${SQ}upstream/main${SQ} by 1 commit.
+
+	Your branch is ahead of ${SQ}origin/feature5${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches supports ordered upstream/push entries' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{push} @{upstream}" &&
+	git -C test checkout -b feature6 upstream/main &&
+	git -C test push origin &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature6
+	Your branch is ahead of ${SQ}origin/feature6${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	Your branch is ahead of ${SQ}upstream/main${SQ} by 1 commit.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches deduplicates repeated specifiers' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{push} @{upstream} @{push}" &&
+	git -C test checkout -b feature7 upstream/main &&
+	git -C test push origin &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature7
+	Your branch is ahead of ${SQ}origin/feature7${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	Your branch is ahead of ${SQ}upstream/main${SQ} by 1 commit.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with diverged push branch' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature8 upstream/main &&
+	(cd test && advance work81) &&
+	git -C test push origin &&
+	git -C test reset --hard upstream/main &&
+	(cd test && advance work82) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature8
+	Your branch is ahead of ${SQ}upstream/main${SQ} by 1 commit.
+
+	Your branch and ${SQ}origin/feature8${SQ} have diverged,
+	and have 1 and 1 different commits each, respectively.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches shows up to date branches' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature9 upstream/main &&
+	git -C test push origin &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature9
+	Your branch is up to date with ${SQ}upstream/main${SQ}.
+
+	Your branch is up to date with ${SQ}origin/feature9${SQ}.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status --no-ahead-behind with status.compareBranches up to date' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout feature9 >actual &&
+	git -C test push origin &&
+	git -C test status --no-ahead-behind >actual &&
+	cat >expect <<-EOF &&
+	On branch feature9
+	Your branch is up to date with ${SQ}upstream/main${SQ}.
+
+	Your branch is up to date with ${SQ}origin/feature9${SQ}.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'checkout with status.compareBranches shows up to date' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout feature9 >actual &&
+	cat >expect <<-EOF &&
+	Your branch is up to date with ${SQ}upstream/main${SQ}.
+
+	Your branch is up to date with ${SQ}origin/feature9${SQ}.
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with upstream behind and push up to date' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b ahead upstream/main &&
+	(cd test && advance work) &&
+	git -C test push upstream HEAD &&
+	git -C test checkout -b feature10 upstream/main &&
+	git -C test push origin &&
+	git -C test branch --set-upstream-to upstream/ahead &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature10
+	Your branch is behind ${SQ}upstream/ahead${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull" to update your local branch)
+
+	Your branch is up to date with ${SQ}origin/feature10${SQ}.
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with remapped push refspec' '
+	test_config -C test remote.origin.push refs/heads/feature11:refs/heads/remapped &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature11 origin/main &&
+	git -C test push &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature11
+	Your branch is ahead of ${SQ}origin/main${SQ} by 1 commit.
+
+	Your branch is ahead of ${SQ}origin/remapped${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with remapped push and upstream remote' '
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test remote.origin.push refs/heads/feature12:refs/heads/remapped &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature12 upstream/main &&
+	git -C test push origin &&
+	(cd test && advance work) &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature12
+	Your branch is ahead of ${SQ}upstream/main${SQ} by 1 commit.
+
+	Your branch is ahead of ${SQ}origin/remapped${SQ} by 1 commit.
+	  (use "git push" to publish your local commits)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches behind both upstream and push' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature13 upstream/main &&
+	(cd test && advance work13) &&
+	git -C test push origin &&
+	git -C test branch --set-upstream-to upstream/ahead &&
+	git -C test reset --hard HEAD^ &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature13
+	Your branch is behind ${SQ}upstream/ahead${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull" to update your local branch)
+
+	Your branch is behind ${SQ}origin/feature13${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull origin feature13" to update your local branch)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with remapped push and behind push branch' '
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test remote.origin.push refs/heads/feature14:refs/heads/remapped14 &&
+	test_config -C test status.compareBranches "@{push}" &&
+	git -C test checkout -b feature14 upstream/main &&
+	(cd test && advance work14) &&
+	git -C test push &&
+	git -C test reset --hard HEAD^ &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature14
+	Your branch is behind ${SQ}origin/remapped14${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull origin remapped14" to update your local branch)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches with behind push branch and no upstream' '
+	test_config -C test push.default current &&
+	test_config -C test remote.pushDefault origin &&
+	test_config -C test status.compareBranches "@{push}" &&
+	git -C test checkout --no-track -b feature15 upstream/main &&
+	(cd test && advance work15) &&
+	git -C test push origin &&
+	git -C test reset --hard HEAD^ &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature15
+	Your branch is behind ${SQ}origin/feature15${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull origin feature15" to update your local branch)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches behind upstream-equals-push suggests plain pull' '
+	test_config -C test status.compareBranches "@{upstream} @{push}" &&
+	git -C test checkout -b feature16 origin/main &&
+	(cd test && advance work16) &&
+	git -C test push origin HEAD:main &&
+	git -C test reset --hard HEAD^ &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature16
+	Your branch is behind ${SQ}origin/main${SQ} by 1 commit, and can be fast-forwarded.
+	  (use "git pull" to update your local branch)
+
+	nothing to commit, working tree clean
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'status.compareBranches suppresses advice when push tracking ref is unconventional' '
+	test_config -C test push.default current &&
+	test_config -C test remote.imported.url ../. &&
+	test_config -C test remote.imported.fetch "+refs/heads/*:refs/imported/imported/*" &&
+	test_config -C test branch.feature17.pushRemote imported &&
+	test_config -C test status.compareBranches "@{push}" &&
+	git -C test fetch imported &&
+	git -C test checkout --no-track -b feature17 refs/imported/imported/main &&
+	(cd test && advance work17) &&
+	git -C test push imported HEAD:feature17 &&
+	git -C test fetch imported &&
+	git -C test reset --hard HEAD^ &&
+	git -C test status >actual &&
+	cat >expect <<-EOF &&
+	On branch feature17
+	Your branch is behind ${SQ}imported/imported/feature17${SQ} by 1 commit, and can be fast-forwarded.
+
+	nothing to commit, working tree clean
+	EOF
 	test_cmp expect actual
 '
 

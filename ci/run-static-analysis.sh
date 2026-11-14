@@ -10,7 +10,7 @@ make coccicheck
 set +x
 
 fail=
-for cocci_patch in contrib/coccinelle/*.patch
+for cocci_patch in tools/coccinelle/*.patch
 do
 	if test -s "$cocci_patch"
 	then
@@ -26,7 +26,11 @@ then
 	exit 1
 fi
 
-make hdr-check ||
+make check-headers ||
 exit 1
+
+make check-pot
+
+${0%/*}/check-unsafe-assertions.sh
 
 save_good_tree

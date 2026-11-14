@@ -9,10 +9,62 @@ This test tries to verify basic sanity of the init, update and status
 subcommands of git submodule.
 '
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
+
+test_expect_success 'setup - enable local submodules' '
+	git config --global protocol.file.allow always
+'
+
+test_expect_success 'submodule usage: -h' '
+	git submodule -h >out 2>err &&
+	test_grep "^usage: git submodule" out &&
+	test_must_be_empty err
+'
+
+test_expect_success 'submodule usage: --recursive' '
+	test_expect_code 1 git submodule --recursive >out 2>err &&
+	test_grep "^usage: git submodule" err &&
+	test_must_be_empty out
+'
+
+test_expect_success 'submodule usage: status --' '
+	test_expect_code 1 git submodule -- &&
+	test_expect_code 1 git submodule --end-of-options
+'
+
+for opt in '--quiet' '--cached'
+do
+	test_expect_success "submodule usage: status $opt" '
+		git submodule $opt &&
+		git submodule status $opt &&
+		git submodule $opt status
+	'
+done
 
 test_expect_success 'submodule deinit works on empty repository' '
 	git submodule deinit --all
+'
+
+test_expect_success 'submodule add with incomplete .gitmodules' '
+	test_when_finished "rm -f expect actual" &&
+	test_when_finished "git config remove-section submodule.one" &&
+	test_when_finished "git rm -f one .gitmodules" &&
+	git init one &&
+	git -C one commit --allow-empty -m one-initial &&
+	git config -f .gitmodules submodule.one.ignore all &&
+
+	git submodule add ./one &&
+
+	for var in ignore path url
+	do
+		git config -f .gitmodules --get "submodule.one.$var" ||
+		return 1
+	done >actual &&
+	test_write_lines all one ./one >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success 'setup - initial commit' '
@@ -27,7 +79,7 @@ test_expect_success 'submodule init aborts on missing .gitmodules file' '
 	git update-index --add --cacheinfo 160000,$(git rev-parse HEAD),sub &&
 	# missing the .gitmodules file here
 	test_must_fail git submodule init 2>actual &&
-	test_i18ngrep "No url found for submodule path" actual
+	test_grep "No url found for submodule path" actual
 '
 
 test_expect_success 'submodule update aborts on missing .gitmodules file' '
@@ -35,7 +87,7 @@ test_expect_success 'submodule update aborts on missing .gitmodules file' '
 	git update-index --add --cacheinfo 160000,$(git rev-parse HEAD),sub &&
 	# missing the .gitmodules file here
 	git submodule update sub 2>actual &&
-	test_i18ngrep "Submodule path .sub. not initialized" actual
+	test_grep "Submodule path .sub. not initialized" actual
 '
 
 test_expect_success 'submodule update aborts on missing gitmodules url' '
@@ -48,11 +100,11 @@ test_expect_success 'submodule update aborts on missing gitmodules url' '
 
 test_expect_success 'add aborts on repository with no commits' '
 	cat >expect <<-\EOF &&
-	'"'repo-no-commits'"' does not have a commit checked out
+	fatal: '"'repo-no-commits'"' does not have a commit checked out
 	EOF
 	git init repo-no-commits &&
 	test_must_fail git submodule add ../a ./repo-no-commits 2>actual &&
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'status should ignore inner git repo when not added' '
@@ -67,7 +119,7 @@ test_expect_success 'status should ignore inner git repo when not added' '
 	) &&
 	test_must_fail git submodule status inner 2>output.err &&
 	rm -fr inner &&
-	test_i18ngrep "^error: .*did not match any file(s) known to git" output.err
+	test_grep "^error: .*did not match any file(s) known to git" output.err
 '
 
 test_expect_success 'setup - repository in init subdirectory' '
@@ -124,7 +176,7 @@ inspect() {
 }
 
 test_expect_success 'submodule add' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -149,6 +201,11 @@ test_expect_success 'submodule add' '
 	test_must_be_empty untracked
 '
 
+test_expect_success !WINDOWS 'submodule add (absolute path)' '
+	test_when_finished "git reset --hard" &&
+	git submodule add "$submodurl" "$submodurl/add-abs"
+'
+
 test_expect_success 'setup parent and one repository' '
 	test_create_repo parent &&
 	test_commit -C parent one
@@ -157,14 +214,14 @@ test_expect_success 'setup parent and one repository' '
 test_expect_success 'redirected submodule add does not show progress' '
 	git -C addtest submodule add "file://$submodurl/parent" submod-redirected \
 		2>err &&
-	! grep % err &&
-	test_i18ngrep ! "Checking connectivity" err
+	test_grep ! % err &&
+	test_grep ! "Checking connectivity" err
 '
 
 test_expect_success 'redirected submodule add --progress does show progress' '
 	git -C addtest submodule add --progress "file://$submodurl/parent" \
 		submod-redirected-progress 2>err && \
-	grep % err
+	test_grep % err
 '
 
 test_expect_success 'submodule add to .gitignored path fails' '
@@ -174,15 +231,14 @@ test_expect_success 'submodule add to .gitignored path fails' '
 		The following paths are ignored by one of your .gitignore files:
 		submod
 		hint: Use -f if you really want to add them.
-		hint: Turn this message off by running
-		hint: "git config advice.addIgnoredFile false"
+		hint: Disable this message with "git config set --global advice.addIgnoredFile false"
 		EOF
 		# Does not use test_commit due to the ignore
 		echo "*" > .gitignore &&
 		git add --force .gitignore &&
 		git commit -m"Ignore everything" &&
 		! git submodule add "$submodurl" submod >actual 2>&1 &&
-		test_i18ncmp expect actual
+		test_cmp expect actual
 	)
 '
 
@@ -190,6 +246,17 @@ test_expect_success 'submodule add to .gitignored path with --force' '
 	(
 		cd addtest-ignore &&
 		git submodule add --force "$submodurl" submod
+	)
+'
+
+test_expect_success 'submodule add to path with tracked content fails' '
+	(
+		cd addtest &&
+		echo "fatal: '\''dir-tracked'\'' already exists in the index" >expect &&
+		mkdir dir-tracked &&
+		test_commit foo dir-tracked/bar &&
+		test_must_fail git submodule add "$submodurl" dir-tracked >actual 2>&1 &&
+		test_cmp expect actual
 	)
 '
 
@@ -214,7 +281,7 @@ test_expect_success 'submodule add relays add --dry-run stderr' '
 		cd addtest &&
 		: >.git/index.lock &&
 		! git submodule add "$submodurl" sub-while-locked 2>output.err &&
-		test_i18ngrep "^fatal: .*index\.lock" output.err &&
+		test_grep "^fatal: .*index\.lock" output.err &&
 		test_path_is_missing sub-while-locked
 	)
 '
@@ -223,7 +290,7 @@ test_expect_success 'submodule add --branch' '
 	echo "refs/heads/initial" >expect-head &&
 	cat <<-\EOF >expect-heads &&
 	refs/heads/initial
-	refs/heads/master
+	refs/heads/main
 	EOF
 
 	(
@@ -241,7 +308,7 @@ test_expect_success 'submodule add --branch' '
 '
 
 test_expect_success 'submodule add with ./ in path' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -257,7 +324,7 @@ test_expect_success 'submodule add with ./ in path' '
 '
 
 test_expect_success 'submodule add with /././ in path' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -273,7 +340,7 @@ test_expect_success 'submodule add with /././ in path' '
 '
 
 test_expect_success 'submodule add with // in path' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -289,7 +356,7 @@ test_expect_success 'submodule add with // in path' '
 '
 
 test_expect_success 'submodule add with /.. in path' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -305,7 +372,7 @@ test_expect_success 'submodule add with /.. in path' '
 '
 
 test_expect_success 'submodule add with ./, /.. and // in path' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	(
 		cd addtest &&
@@ -335,7 +402,7 @@ test_expect_success !CYGWIN 'submodule add with \\ in path' '
 '
 
 test_expect_success 'submodule add in subdirectory' '
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 
 	mkdir addtest/sub &&
 	(
@@ -356,7 +423,32 @@ test_expect_success 'submodule add in subdirectory with relative path should fai
 		cd addtest/sub &&
 		test_must_fail git submodule add ../../ submod3 2>../../output.err
 	) &&
-	test_i18ngrep toplevel output.err
+	test_grep toplevel output.err
+'
+
+test_expect_success 'submodule add of a different algorithm fails' '
+	git init --object-format=sha256 sha256 &&
+	(
+		cd sha256 &&
+		test_commit abc &&
+		git init --object-format=sha1 submodule &&
+		test_commit -C submodule def &&
+		test_must_fail git submodule add "$submodurl" submodule 2>err &&
+		test_grep "cannot add a submodule of a different hash algorithm" err &&
+		git ls-files --stage >entries &&
+		test_grep ! ^160000 entries
+	) &&
+	git init --object-format=sha1 sha1 &&
+	(
+		cd sha1 &&
+		test_commit abc &&
+		git init --object-format=sha256 submodule &&
+		test_commit -C submodule def &&
+		test_must_fail git submodule add "$submodurl" submodule 2>err &&
+		test_grep "cannot add a submodule of a different hash algorithm" err &&
+		git ls-files --stage >entries &&
+		test_grep ! ^160000 entries
+	)
 '
 
 test_expect_success 'setup - add an example entry to .gitmodules' '
@@ -414,7 +506,7 @@ test_expect_success 'setup - fetch commit name from submodule' '
 
 test_expect_success 'status should initially be "missing"' '
 	git submodule status >lines &&
-	grep "^-$rev1" lines
+	test_grep "^-$rev1" lines
 '
 
 test_expect_success 'init should register submodule url in .git/config' '
@@ -432,12 +524,12 @@ test_expect_success 'status should still be "missing" after initializing' '
 	mkdir init &&
 	git submodule status >lines &&
 	rm -fr init &&
-	grep "^-$rev1" lines
+	test_grep "^-$rev1" lines
 '
 
 test_failure_with_unknown_submodule () {
 	test_must_fail git submodule $1 no-such-submodule 2>output.err &&
-	test_i18ngrep "^error: .*no-such-submodule" output.err
+	test_grep "^error: .*no-such-submodule" output.err
 }
 
 test_expect_success 'init should fail with unknown submodule' '
@@ -492,7 +584,7 @@ test_expect_success 'update should work when path is an empty dir' '
 
 test_expect_success 'status should be "up-to-date" after update' '
 	git submodule status >list &&
-	grep "^ $rev1" list
+	test_grep "^ $rev1" list
 '
 
 test_expect_success 'status "up-to-date" from subdirectory' '
@@ -501,8 +593,8 @@ test_expect_success 'status "up-to-date" from subdirectory' '
 		cd sub &&
 		git submodule status >../list
 	) &&
-	grep "^ $rev1" list &&
-	grep "\\.\\./init" list
+	test_grep "^ $rev1" list &&
+	test_grep "\\.\\./init" list
 '
 
 test_expect_success 'status "up-to-date" from subdirectory with path' '
@@ -511,8 +603,8 @@ test_expect_success 'status "up-to-date" from subdirectory with path' '
 		cd sub &&
 		git submodule status ../init >../list
 	) &&
-	grep "^ $rev1" list &&
-	grep "\\.\\./init" list
+	test_grep "^ $rev1" list &&
+	test_grep "\\.\\./init" list
 '
 
 test_expect_success 'status should be "modified" after submodule commit' '
@@ -527,17 +619,27 @@ test_expect_success 'status should be "modified" after submodule commit' '
 	test -n "$rev2" &&
 	git submodule status >list &&
 
-	grep "^+$rev2" list
+	test_grep "^+$rev2" list
+'
+
+test_expect_success '"submodule --cached" command forms should be identical' '
+	git submodule status --cached >expect &&
+
+	git submodule --cached >actual &&
+	test_cmp expect actual &&
+
+	git submodule --cached status >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'the --cached sha1 should be rev1' '
 	git submodule --cached status >list &&
-	grep "^+$rev1" list
+	test_grep "^+$rev1" list
 '
 
 test_expect_success 'git diff should report the SHA1 of the new submodule commit' '
 	git diff >diff &&
-	grep "^+Subproject commit $rev2" diff
+	test_grep "^+Subproject commit $rev2" diff
 '
 
 test_expect_success 'update should checkout rev1' '
@@ -552,12 +654,12 @@ test_expect_success 'update should checkout rev1' '
 
 test_expect_success 'status should be "up-to-date" after update' '
 	git submodule status >list &&
-	grep "^ $rev1" list
+	test_grep "^ $rev1" list
 '
 
 test_expect_success 'checkout superproject with subproject already present' '
 	git checkout initial &&
-	git checkout master
+	git checkout main
 '
 
 test_expect_success 'apply submodule diff' '
@@ -574,7 +676,7 @@ test_expect_success 'apply submodule diff' '
 	git checkout second &&
 	git apply --index P.diff &&
 
-	git diff --cached master >staged &&
+	git diff --cached main >staged &&
 	test_must_be_empty staged
 '
 
@@ -585,7 +687,7 @@ test_expect_success 'update --init' '
 	test_must_fail git config submodule.example.url &&
 
 	git submodule update init 2> update.out &&
-	test_i18ngrep "not initialized" update.out &&
+	test_grep "not initialized" update.out &&
 	test_must_fail git rev-parse --resolve-git-dir init/.git &&
 
 	git submodule update --init init &&
@@ -602,7 +704,7 @@ test_expect_success 'update --init from subdirectory' '
 	(
 		cd sub &&
 		git submodule update ../init 2>update.out &&
-		test_i18ngrep "not initialized" update.out &&
+		test_grep "not initialized" update.out &&
 		test_must_fail git rev-parse --resolve-git-dir ../init/.git &&
 
 		git submodule update --init ../init
@@ -1062,7 +1164,7 @@ test_expect_success 'submodule deinit from subdirectory' '
 		cd sub &&
 		git submodule deinit ../init >../output
 	) &&
-	test_i18ngrep "\\.\\./init" output &&
+	test_grep "\\.\\./init" output &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
 	test -n "$(git config --get-regexp "submodule\.example2\.")" &&
 	test -f example2/.git &&
@@ -1077,8 +1179,8 @@ test_expect_success 'submodule deinit . deinits all initialized submodules' '
 	git submodule deinit . >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
 	test -z "$(git config --get-regexp "submodule\.example2\.")" &&
-	test_i18ngrep "Cleared directory .init" actual &&
-	test_i18ngrep "Cleared directory .example2" actual &&
+	test_grep "Cleared directory .init" actual &&
+	test_grep "Cleared directory .example2" actual &&
 	rmdir init example2
 '
 
@@ -1090,8 +1192,8 @@ test_expect_success 'submodule deinit --all deinits all initialized submodules' 
 	git submodule deinit --all >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
 	test -z "$(git config --get-regexp "submodule\.example2\.")" &&
-	test_i18ngrep "Cleared directory .init" actual &&
-	test_i18ngrep "Cleared directory .example2" actual &&
+	test_grep "Cleared directory .init" actual &&
+	test_grep "Cleared directory .example2" actual &&
 	rmdir init example2
 '
 
@@ -1101,8 +1203,8 @@ test_expect_success 'submodule deinit deinits a submodule when its work tree is 
 	git submodule deinit init example2 >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
 	test -z "$(git config --get-regexp "submodule\.example2\.")" &&
-	test_i18ngrep ! "Cleared directory .init" actual &&
-	test_i18ngrep "Cleared directory .example2" actual &&
+	test_grep ! "Cleared directory .init" actual &&
+	test_grep "Cleared directory .example2" actual &&
 	rmdir init
 '
 
@@ -1114,7 +1216,7 @@ test_expect_success 'submodule deinit fails when the submodule contains modifica
 	test -f example2/.git &&
 	git submodule deinit -f init >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep "Cleared directory .init" actual &&
 	rmdir init
 '
 
@@ -1126,7 +1228,7 @@ test_expect_success 'submodule deinit fails when the submodule contains untracke
 	test -f example2/.git &&
 	git submodule deinit -f init >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep "Cleared directory .init" actual &&
 	rmdir init
 '
 
@@ -1141,45 +1243,44 @@ test_expect_success 'submodule deinit fails when the submodule HEAD does not mat
 	test -f example2/.git &&
 	git submodule deinit -f init >actual &&
 	test -z "$(git config --get-regexp "submodule\.example\.")" &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep "Cleared directory .init" actual &&
 	rmdir init
 '
 
 test_expect_success 'submodule deinit is silent when used on an uninitialized submodule' '
 	git submodule update --init &&
 	git submodule deinit init >actual &&
-	test_i18ngrep "Submodule .example. (.*) unregistered for path .init" actual &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep "Submodule .example. (.*) unregistered for path .init" actual &&
+	test_grep "Cleared directory .init" actual &&
 	git submodule deinit init >actual &&
-	test_i18ngrep ! "Submodule .example. (.*) unregistered for path .init" actual &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep ! "Submodule .example. (.*) unregistered for path .init" actual &&
+	test_grep "Cleared directory .init" actual &&
 	git submodule deinit . >actual &&
-	test_i18ngrep ! "Submodule .example. (.*) unregistered for path .init" actual &&
-	test_i18ngrep "Submodule .example2. (.*) unregistered for path .example2" actual &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep ! "Submodule .example. (.*) unregistered for path .init" actual &&
+	test_grep "Submodule .example2. (.*) unregistered for path .example2" actual &&
+	test_grep "Cleared directory .init" actual &&
 	git submodule deinit . >actual &&
-	test_i18ngrep ! "Submodule .example. (.*) unregistered for path .init" actual &&
-	test_i18ngrep ! "Submodule .example2. (.*) unregistered for path .example2" actual &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep ! "Submodule .example. (.*) unregistered for path .init" actual &&
+	test_grep ! "Submodule .example2. (.*) unregistered for path .example2" actual &&
+	test_grep "Cleared directory .init" actual &&
 	git submodule deinit --all >actual &&
-	test_i18ngrep ! "Submodule .example. (.*) unregistered for path .init" actual &&
-	test_i18ngrep ! "Submodule .example2. (.*) unregistered for path .example2" actual &&
-	test_i18ngrep "Cleared directory .init" actual &&
+	test_grep ! "Submodule .example. (.*) unregistered for path .init" actual &&
+	test_grep ! "Submodule .example2. (.*) unregistered for path .example2" actual &&
+	test_grep "Cleared directory .init" actual &&
 	rmdir init example2
 '
 
-test_expect_success 'submodule deinit fails when submodule has a .git directory even when forced' '
+test_expect_success 'submodule deinit absorbs .git directory if .git is a directory' '
 	git submodule update --init &&
 	(
 		cd init &&
 		rm .git &&
-		cp -R ../.git/modules/example .git &&
+		mv ../.git/modules/example .git &&
 		GIT_WORK_TREE=. git config --unset core.worktree
 	) &&
-	test_must_fail git submodule deinit init &&
-	test_must_fail git submodule deinit -f init &&
-	test -d init/.git &&
-	test -n "$(git config --get-regexp "submodule\.example\.")"
+	git submodule deinit init &&
+	test_path_is_missing init/.git &&
+	test -z "$(git config --get-regexp "submodule\.example\.")"
 '
 
 test_expect_success 'submodule with UTF-8 name' '
@@ -1209,31 +1310,6 @@ test_expect_success 'submodule add clone shallow submodule' '
 			test 1 = $(git log --oneline | wc -l)
 		)
 	)
-'
-
-test_expect_success 'submodule helper list is not confused by common prefixes' '
-	mkdir -p dir1/b &&
-	(
-		cd dir1/b &&
-		git init &&
-		echo hi >testfile2 &&
-		git add . &&
-		git commit -m "test1"
-	) &&
-	mkdir -p dir2/b &&
-	(
-		cd dir2/b &&
-		git init &&
-		echo hello >testfile1 &&
-		git add .  &&
-		git commit -m "test2"
-	) &&
-	git submodule add /dir1/b dir1/b &&
-	git submodule add /dir2/b dir2/b &&
-	git commit -m "first submodule commit" &&
-	git submodule--helper list dir1/b | cut -f 2 >actual &&
-	echo "dir1/b" >expect &&
-	test_cmp expect actual
 '
 
 test_expect_success 'setup superproject with submodules' '
@@ -1316,6 +1392,22 @@ test_expect_success 'clone active submodule without submodule url set' '
 		EOF
 		test_cmp expect actual
 	)
+'
+
+test_expect_success 'update submodules without url set in .gitconfig' '
+	test_when_finished "rm -rf multisuper_clone" &&
+	git clone file://"$pwd"/multisuper multisuper_clone &&
+
+	git -C multisuper_clone submodule init &&
+	for s in sub0 sub1 sub2 sub3
+	do
+		key=submodule.$s.url &&
+		git -C multisuper_clone config --local --unset $key &&
+		git -C multisuper_clone config --file .gitmodules --unset $key || return 1
+	done &&
+
+	test_must_fail git -C multisuper_clone submodule update 2>err &&
+	test_grep "cannot clone submodule .sub[0-3]. without a URL" err
 '
 
 test_expect_success 'clone --recurse-submodules with a pathspec works' '
@@ -1401,6 +1493,60 @@ test_expect_success 'recursive clone respects -q' '
 	test_when_finished "rm -rf multisuper_clone" &&
 	git clone -q --recurse-submodules multisuper multisuper_clone >actual &&
 	test_must_be_empty actual
+'
+
+test_expect_success '`submodule init` and `init.templateDir`' '
+	mkdir -p tmpl/hooks &&
+	write_script tmpl/hooks/post-checkout <<-EOF &&
+	echo HOOK-RUN >&2
+	echo I was here >hook.run
+	exit 1
+	EOF
+
+	test_config init.templateDir "$(pwd)/tmpl" &&
+	test_when_finished \
+		"git config --global --unset init.templateDir || true" &&
+	(
+		sane_unset GIT_TEMPLATE_DIR &&
+		NO_SET_GIT_TEMPLATE_DIR=t &&
+		export NO_SET_GIT_TEMPLATE_DIR &&
+
+		git config --global init.templateDir "$(pwd)/tmpl" &&
+		test_must_fail git submodule \
+			add "$submodurl" sub-global 2>err &&
+		git config --global --unset init.templateDir &&
+		test_grep HOOK-RUN err &&
+		test_path_is_file sub-global/hook.run &&
+
+		git config init.templateDir "$(pwd)/tmpl" &&
+		git submodule add "$submodurl" sub-local 2>err &&
+		git config --unset init.templateDir &&
+		test_grep ! HOOK-RUN err &&
+		test_path_is_missing sub-local/hook.run
+	)
+'
+
+test_expect_success 'submodule add fails when name is reused' '
+	git init test-submodule &&
+	(
+		cd test-submodule &&
+		git commit --allow-empty -m init &&
+
+		git init ../child-origin &&
+		git -C ../child-origin commit --allow-empty -m init &&
+
+		git submodule add ../child-origin child &&
+		git commit -m "Add submodule child" &&
+
+		git mv child child_old &&
+		git commit -m "Move child to child_old" &&
+
+		# Now adding a *new* repo at the old name must fail
+		git init ../child2-origin &&
+		git -C ../child2-origin commit --allow-empty -m init &&
+		test_must_fail git submodule add ../child2-origin child 2>err &&
+		test_grep "already used for" err
+	)
 '
 
 test_done

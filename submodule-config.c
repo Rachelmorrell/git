@@ -1,12 +1,24 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "dir.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
+#include "path.h"
 #include "repository.h"
 #include "config.h"
 #include "submodule-config.h"
 #include "submodule.h"
 #include "strbuf.h"
-#include "object-store.h"
+#include "object-name.h"
+#include "odb.h"
+#include "odb/source.h"
 #include "parse-options.h"
+#include "thread-utils.h"
+#include "tree-walk.h"
+#include "url.h"
+#include "urlmatch.h"
 
 /*
  * submodule cache lookup structure
@@ -37,10 +49,10 @@ enum lookup_type {
 	lookup_path
 };
 
-static int config_path_cmp(const void *unused_cmp_data,
+static int config_path_cmp(const void *cmp_data UNUSED,
 			   const struct hashmap_entry *eptr,
 			   const struct hashmap_entry *entry_or_key,
-			   const void *unused_keydata)
+			   const void *keydata UNUSED)
 {
 	const struct submodule_entry *a, *b;
 
@@ -51,10 +63,10 @@ static int config_path_cmp(const void *unused_cmp_data,
 	       !oideq(&a->config->gitmodules_oid, &b->config->gitmodules_oid);
 }
 
-static int config_name_cmp(const void *unused_cmp_data,
+static int config_name_cmp(const void *cmp_data UNUSED,
 			   const struct hashmap_entry *eptr,
 			   const struct hashmap_entry *entry_or_key,
-			   const void *unused_keydata)
+			   const void *keydata UNUSED)
 {
 	const struct submodule_entry *a, *b;
 
@@ -82,7 +94,9 @@ static void free_one_config(struct submodule_entry *entry)
 	free((void *) entry->config->path);
 	free((void *) entry->config->name);
 	free((void *) entry->config->branch);
-	free((void *) entry->config->update_strategy.command);
+	free((void *) entry->config->url);
+	free((void *) entry->config->ignore);
+	submodule_update_strategy_release(&entry->config->update_strategy);
 	free(entry->config);
 }
 
@@ -118,7 +132,9 @@ void submodule_cache_free(struct submodule_cache *cache)
 static unsigned int hash_oid_string(const struct object_id *oid,
 				    const char *string)
 {
-	return memhash(oid->hash, the_hash_algo->rawsz) + strhash(string);
+	if (oid->algo == GIT_HASH_UNKNOWN)
+		BUG("hashing an object ID with unknown algorithm");
+	return memhash(oid->hash, hash_algos[oid->algo].rawsz) + strhash(string);
 }
 
 static void cache_put_path(struct submodule_cache *cache,
@@ -203,19 +219,145 @@ int check_submodule_name(const char *name)
 		return -1;
 
 	/*
-	 * Look for '..' as a path component. Check both '/' and '\\' as
+	 * Look for '..' as a path component. Check is_xplatform_dir_sep() as
 	 * separators rather than is_dir_sep(), because we want the name rules
 	 * to be consistent across platforms.
 	 */
 	goto in_component; /* always start inside component */
 	while (*name) {
 		char c = *name++;
-		if (c == '/' || c == '\\') {
+		if (is_xplatform_dir_sep(c)) {
 in_component:
 			if (name[0] == '.' && name[1] == '.' &&
-			    (!name[2] || name[2] == '/' || name[2] == '\\'))
+			    (!name[2] || is_xplatform_dir_sep(name[2])))
 				return -1;
 		}
+	}
+
+	return 0;
+}
+
+static int submodule_url_is_relative(const char *url)
+{
+	return starts_with_dot_slash(url) || starts_with_dot_dot_slash(url);
+}
+
+/*
+ * Count directory components that a relative submodule URL should chop
+ * from the remote_url it is to be resolved against.
+ *
+ * In other words, this counts "../" components at the start of a
+ * submodule URL.
+ *
+ * Returns the number of directory components to chop and writes a
+ * pointer to the next character of url after all leading "./" and
+ * "../" components to out.
+ */
+static int count_leading_dotdots(const char *url, const char **out)
+{
+	int result = 0;
+	while (1) {
+		if (starts_with_dot_dot_slash(url)) {
+			result++;
+			url += strlen("../");
+			continue;
+		}
+		if (starts_with_dot_slash(url)) {
+			url += strlen("./");
+			continue;
+		}
+		*out = url;
+		return result;
+	}
+}
+/*
+ * Check whether a transport is implemented by git-remote-curl.
+ *
+ * If it is, returns 1 and writes the URL that would be passed to
+ * git-remote-curl to the "out" parameter.
+ *
+ * Otherwise, returns 0 and leaves "out" untouched.
+ *
+ * Examples:
+ *   http::https://example.com/repo.git -> 1, https://example.com/repo.git
+ *   https://example.com/repo.git -> 1, https://example.com/repo.git
+ *   git://example.com/repo.git -> 0
+ *
+ * This is for use in checking for previously exploitable bugs that
+ * required a submodule URL to be passed to git-remote-curl.
+ */
+static int url_to_curl_url(const char *url, const char **out)
+{
+	/*
+	 * We don't need to check for case-aliases, "http.exe", and so
+	 * on because in the default configuration, is_transport_allowed
+	 * prevents URLs with those schemes from being cloned
+	 * automatically.
+	 */
+	if (skip_prefix(url, "http::", out) ||
+	    skip_prefix(url, "https::", out) ||
+	    skip_prefix(url, "ftp::", out) ||
+	    skip_prefix(url, "ftps::", out))
+		return 1;
+	if (starts_with(url, "http://") ||
+	    starts_with(url, "https://") ||
+	    starts_with(url, "ftp://") ||
+	    starts_with(url, "ftps://")) {
+		*out = url;
+		return 1;
+	}
+	return 0;
+}
+
+int check_submodule_url(const char *url)
+{
+	const char *curl_url;
+
+	if (looks_like_command_line_option(url))
+		return -1;
+
+	if (submodule_url_is_relative(url) || starts_with(url, "git://")) {
+		char *decoded;
+		const char *next;
+		int has_nl;
+
+		/*
+		 * This could be appended to an http URL and url-decoded;
+		 * check for malicious characters.
+		 */
+		decoded = url_decode(url);
+		has_nl = !!strchr(decoded, '\n');
+
+		free(decoded);
+		if (has_nl)
+			return -1;
+
+		/*
+		 * URLs which escape their root via "../" can overwrite
+		 * the host field and previous components, resolving to
+		 * URLs like https::example.com/submodule.git and
+		 * https:///example.com/submodule.git that were
+		 * susceptible to CVE-2020-11008.
+		 */
+		if (count_leading_dotdots(url, &next) > 0 &&
+		    (*next == ':' || *next == '/'))
+			return -1;
+	}
+
+	else if (url_to_curl_url(url, &curl_url)) {
+		int ret = 0;
+		char *normalized = url_normalize(curl_url, NULL);
+		if (normalized) {
+			char *decoded = url_decode(normalized);
+			if (strchr(decoded, '\n'))
+				ret = -1;
+			free(normalized);
+			free(decoded);
+		} else {
+			ret = -1;
+		}
+
+		return ret;
 	}
 
 	return 0;
@@ -297,11 +439,14 @@ static int parse_fetch_recurse(const char *opt, const char *arg,
 	}
 }
 
-int parse_submodule_fetchjobs(const char *var, const char *value)
+int parse_submodule_fetchjobs(const char *var, const char *value,
+			      const struct key_value_info *kvi)
 {
-	int fetchjobs = git_config_int(var, value);
+	int fetchjobs = git_config_int(var, value, kvi);
 	if (fetchjobs < 0)
-		die(_("negative values not allowed for submodule.fetchjobs"));
+		die(_("negative values not allowed for submodule.fetchJobs"));
+	if (!fetchjobs)
+		fetchjobs = online_cpus();
 	return fetchjobs;
 }
 
@@ -417,7 +562,8 @@ struct parse_config_parameter {
  * config store (.git/config, etc).  Callers are responsible for
  * checking for overrides in the main config store when appropriate.
  */
-static int parse_config(const char *var, const char *value, void *data)
+static int parse_config(const char *var, const char *value,
+			const struct config_context *ctx UNUSED, void *data)
 {
 	struct parse_config_parameter *me = data;
 	struct submodule *submodule;
@@ -496,7 +642,7 @@ static int parse_config(const char *var, const char *value, void *data)
 		else if (parse_submodule_update_strategy(value,
 			 &submodule->update_strategy) < 0 ||
 			 submodule->update_strategy.type == SM_UPDATE_COMMAND)
-			die(_("invalid value for %s"), var);
+			die(_("invalid value for '%s'"), var);
 	} else if (!strcmp(item.buf, "shallow")) {
 		if (!me->overwrite && submodule->recommend_shallow != -1)
 			warn_multiple_config(me->treeish_name, submodule->name,
@@ -505,7 +651,9 @@ static int parse_config(const char *var, const char *value, void *data)
 			submodule->recommend_shallow =
 				git_config_bool(var, value);
 	} else if (!strcmp(item.buf, "branch")) {
-		if (!me->overwrite && submodule->branch)
+		if (!value)
+			ret = config_error_nonbool(var);
+		else if (!me->overwrite && submodule->branch)
 			warn_multiple_config(me->treeish_name, submodule->name,
 					     "branch");
 		else {
@@ -520,19 +668,20 @@ static int parse_config(const char *var, const char *value, void *data)
 	return ret;
 }
 
-static int gitmodule_oid_from_commit(const struct object_id *treeish_name,
+static int gitmodule_oid_from_commit(struct repository *repo,
+				     const struct object_id *treeish_name,
 				     struct object_id *gitmodules_oid,
 				     struct strbuf *rev)
 {
 	int ret = 0;
 
 	if (is_null_oid(treeish_name)) {
-		oidclr(gitmodules_oid);
+		oidclr(gitmodules_oid, repo->hash_algo);
 		return 1;
 	}
 
 	strbuf_addf(rev, "%s:.gitmodules", oid_to_hex(treeish_name));
-	if (get_oid(rev->buf, gitmodules_oid) >= 0)
+	if (repo_get_oid(repo, rev->buf, gitmodules_oid) >= 0)
 		ret = 1;
 
 	return ret;
@@ -542,12 +691,14 @@ static int gitmodule_oid_from_commit(const struct object_id *treeish_name,
  * (key) with on-demand reading of the appropriate .gitmodules from
  * revisions.
  */
-static const struct submodule *config_from(struct submodule_cache *cache,
-		const struct object_id *treeish_name, const char *key,
-		enum lookup_type lookup_type)
+static const struct submodule *config_from(struct repository *repo,
+					   struct submodule_cache *cache,
+					   const struct object_id *treeish_name,
+					   const char *key,
+					   enum lookup_type lookup_type)
 {
 	struct strbuf rev = STRBUF_INIT;
-	unsigned long config_size;
+	size_t config_size;
 	char *config = NULL;
 	struct object_id oid;
 	enum object_type type;
@@ -571,7 +722,7 @@ static const struct submodule *config_from(struct submodule_cache *cache,
 		return entry->config;
 	}
 
-	if (!gitmodule_oid_from_commit(treeish_name, &oid, &rev))
+	if (!gitmodule_oid_from_commit(repo, treeish_name, &oid, &rev))
 		goto out;
 
 	switch (lookup_type) {
@@ -585,7 +736,8 @@ static const struct submodule *config_from(struct submodule_cache *cache,
 	if (submodule)
 		goto out;
 
-	config = read_object_file(&oid, &type, &config_size);
+	config = odb_read_object(repo->objects, &oid,
+				 &type, &config_size);
 	if (!config || type != OBJ_BLOB)
 		goto out;
 
@@ -595,7 +747,7 @@ static const struct submodule *config_from(struct submodule_cache *cache,
 	parameter.gitmodules_oid = &oid;
 	parameter.overwrite = 0;
 	git_config_from_mem(parse_config, CONFIG_ORIGIN_SUBMODULE_BLOB, rev.buf,
-			config, config_size, &parameter, NULL);
+			    config, config_size, &parameter, CONFIG_SCOPE_UNKNOWN, NULL);
 	strbuf_release(&rev);
 	free(config);
 
@@ -650,13 +802,11 @@ static void config_from_gitmodules(config_fn_t fn, struct repository *repo, void
 		} else if (repo_get_oid(repo, GITMODULES_INDEX, &oid) >= 0 ||
 			   repo_get_oid(repo, GITMODULES_HEAD, &oid) >= 0) {
 			config_source.blob = oidstr = xstrdup(oid_to_hex(&oid));
-			if (repo != the_repository)
-				add_to_alternates_memory(repo->objects->odb->path);
 		} else {
 			goto out;
 		}
 
-		config_with_options(fn, data, &config_source, &opts);
+		config_with_options(fn, data, &config_source, repo, &opts);
 
 out:
 		free(oidstr);
@@ -664,17 +814,18 @@ out:
 	}
 }
 
-static int gitmodules_cb(const char *var, const char *value, void *data)
+static int gitmodules_cb(const char *var, const char *value,
+			 const struct config_context *ctx, void *data)
 {
 	struct repository *repo = data;
 	struct parse_config_parameter parameter;
 
 	parameter.cache = repo->submodule_cache;
 	parameter.treeish_name = NULL;
-	parameter.gitmodules_oid = &null_oid;
+	parameter.gitmodules_oid = null_oid(repo->hash_algo);
 	parameter.overwrite = 1;
 
-	return parse_config(var, value, &parameter);
+	return parse_config(var, value, ctx, &parameter);
 }
 
 void repo_read_gitmodules(struct repository *repo, int skip_if_read)
@@ -693,20 +844,22 @@ void repo_read_gitmodules(struct repository *repo, int skip_if_read)
 	repo->submodule_cache->gitmodules_read = 1;
 }
 
-void gitmodules_config_oid(const struct object_id *commit_oid)
+void gitmodules_config_oid(struct repository *repo,
+			   const struct object_id *commit_oid)
 {
 	struct strbuf rev = STRBUF_INIT;
 	struct object_id oid;
 
-	submodule_cache_check_init(the_repository);
+	submodule_cache_check_init(repo);
 
-	if (gitmodule_oid_from_commit(commit_oid, &oid, &rev)) {
+	if (gitmodule_oid_from_commit(repo, commit_oid, &oid, &rev)) {
 		git_config_from_blob_oid(gitmodules_cb, rev.buf,
-					 &oid, the_repository);
+					 repo, &oid, repo,
+					 CONFIG_SCOPE_UNKNOWN);
 	}
 	strbuf_release(&rev);
 
-	the_repository->submodule_cache->gitmodules_read = 1;
+	repo->submodule_cache->gitmodules_read = 1;
 }
 
 const struct submodule *submodule_from_name(struct repository *r,
@@ -714,7 +867,7 @@ const struct submodule *submodule_from_name(struct repository *r,
 		const char *name)
 {
 	repo_read_gitmodules(r, 1);
-	return config_from(r->submodule_cache, treeish_name, name, lookup_name);
+	return config_from(r, r->submodule_cache, treeish_name, name, lookup_name);
 }
 
 const struct submodule *submodule_from_path(struct repository *r,
@@ -722,7 +875,78 @@ const struct submodule *submodule_from_path(struct repository *r,
 		const char *path)
 {
 	repo_read_gitmodules(r, 1);
-	return config_from(r->submodule_cache, treeish_name, path, lookup_path);
+	return config_from(r, r->submodule_cache, treeish_name, path, lookup_path);
+}
+
+/**
+ * Used internally by submodules_of_tree(). Recurses into 'treeish_name'
+ * and appends submodule entries to 'out'. The submodule_cache expects
+ * a root-level treeish_name and paths, so keep track of these values
+ * with 'root_tree' and 'prefix'.
+ */
+static void traverse_tree_submodules(struct repository *r,
+				     const struct object_id *root_tree,
+				     char *prefix,
+				     const struct object_id *treeish_name,
+				     struct submodule_entry_list *out)
+{
+	struct tree_desc tree;
+	struct submodule_tree_entry *st_entry;
+	struct name_entry name_entry;
+	char *tree_path = NULL;
+	char *tree_buf;
+
+	tree_buf = fill_tree_descriptor(r, &tree, treeish_name);
+	while (tree_entry(&tree, &name_entry)) {
+		if (prefix)
+			tree_path =
+				mkpathdup("%s/%s", prefix, name_entry.path);
+		else
+			tree_path = xstrdup(name_entry.path);
+
+		if (S_ISGITLINK(name_entry.mode) &&
+		    is_tree_submodule_active(r, root_tree, tree_path)) {
+			ALLOC_GROW(out->entries, out->entry_nr + 1,
+				   out->entry_alloc);
+			st_entry = &out->entries[out->entry_nr++];
+
+			st_entry->name_entry = xmalloc(sizeof(*st_entry->name_entry));
+			*st_entry->name_entry = name_entry;
+			st_entry->submodule =
+				submodule_from_path(r, root_tree, tree_path);
+			st_entry->repo = xmalloc(sizeof(*st_entry->repo));
+			if (repo_submodule_init(st_entry->repo, r, tree_path,
+						root_tree))
+				FREE_AND_NULL(st_entry->repo);
+
+		} else if (S_ISDIR(name_entry.mode))
+			traverse_tree_submodules(r, root_tree, tree_path,
+						 &name_entry.oid, out);
+		free(tree_path);
+	}
+
+	free(tree_buf);
+}
+
+void submodules_of_tree(struct repository *r,
+			const struct object_id *treeish_name,
+			struct submodule_entry_list *out)
+{
+	CALLOC_ARRAY(out->entries, 0);
+	out->entry_nr = 0;
+	out->entry_alloc = 0;
+
+	traverse_tree_submodules(r, treeish_name, NULL, treeish_name, out);
+}
+
+void submodule_entry_list_release(struct submodule_entry_list *list)
+{
+	for (size_t i = 0; i < list->entry_nr; i++) {
+		free(list->entries[i].name_entry);
+		repo_clear(list->entries[i].repo);
+		free(list->entries[i].repo);
+	}
+	free(list->entries);
 }
 
 void submodule_free(struct repository *r)
@@ -731,7 +955,9 @@ void submodule_free(struct repository *r)
 		submodule_cache_clear(r->submodule_cache);
 }
 
-static int config_print_callback(const char *var, const char *value, void *cb_data)
+static int config_print_callback(const char *var, const char *value,
+				 const struct config_context *ctx UNUSED,
+				 void *cb_data)
 {
 	char *wanted_key = cb_data;
 
@@ -756,11 +982,12 @@ int print_config_from_gitmodules(struct repository *repo, const char *key)
 	return 0;
 }
 
-int config_set_in_gitmodules_file_gently(const char *key, const char *value)
+int config_set_in_gitmodules_file_gently(struct repository *repo,
+					 const char *key, const char *value)
 {
 	int ret;
 
-	ret = git_config_set_in_file_gently(GITMODULES_FILE, key, value);
+	ret = repo_config_set_in_file_gently(repo, GITMODULES_FILE, key, NULL, value);
 	if (ret < 0)
 		/* Maybe the user already did that, don't error out here */
 		warning(_("Could not update .gitmodules entry %s"), key);
@@ -773,13 +1000,15 @@ struct fetch_config {
 	int *recurse_submodules;
 };
 
-static int gitmodules_fetch_config(const char *var, const char *value, void *cb)
+static int gitmodules_fetch_config(const char *var, const char *value,
+				   const struct config_context *ctx,
+				   void *cb)
 {
 	struct fetch_config *config = cb;
 	if (!strcmp(var, "submodule.fetchjobs")) {
 		if (config->max_children)
 			*(config->max_children) =
-				parse_submodule_fetchjobs(var, value);
+				parse_submodule_fetchjobs(var, value, ctx->kvi);
 		return 0;
 	} else if (!strcmp(var, "fetch.recursesubmodules")) {
 		if (config->recurse_submodules)
@@ -791,25 +1020,28 @@ static int gitmodules_fetch_config(const char *var, const char *value, void *cb)
 	return 0;
 }
 
-void fetch_config_from_gitmodules(int *max_children, int *recurse_submodules)
+void fetch_config_from_gitmodules(struct repository *repo,
+				  int *max_children,
+				  int *recurse_submodules)
 {
 	struct fetch_config config = {
 		.max_children = max_children,
 		.recurse_submodules = recurse_submodules
 	};
-	config_from_gitmodules(gitmodules_fetch_config, the_repository, &config);
+	config_from_gitmodules(gitmodules_fetch_config, repo, &config);
 }
 
 static int gitmodules_update_clone_config(const char *var, const char *value,
+					  const struct config_context *ctx,
 					  void *cb)
 {
 	int *max_jobs = cb;
 	if (!strcmp(var, "submodule.fetchjobs"))
-		*max_jobs = parse_submodule_fetchjobs(var, value);
+		*max_jobs = parse_submodule_fetchjobs(var, value, ctx->kvi);
 	return 0;
 }
 
-void update_clone_config_from_gitmodules(int *max_jobs)
+void update_clone_config_from_gitmodules(struct repository *repo, int *max_jobs)
 {
-	config_from_gitmodules(gitmodules_update_clone_config, the_repository, &max_jobs);
+	config_from_gitmodules(gitmodules_update_clone_config, repo, max_jobs);
 }

@@ -18,7 +18,7 @@
  */
 #define pthread_mutex_t CRITICAL_SECTION
 
-static inline int return_0(int i) {
+static inline int return_0(int i UNUSED) {
 	return 0;
 }
 #define pthread_mutex_init(a,b) return_0((InitializeCriticalSection((a)), 0))
@@ -34,9 +34,8 @@ typedef int pthread_mutexattr_t;
 
 #define pthread_cond_t CONDITION_VARIABLE
 
-#define pthread_cond_init(a,b) InitializeConditionVariable((a))
+#define pthread_cond_init(a,b) return_0((InitializeConditionVariable((a)), 0))
 #define pthread_cond_destroy(a) do {} while (0)
-#define pthread_cond_wait(a,b) return_0(SleepConditionVariableCS((a), (b), INFINITE))
 #define pthread_cond_signal WakeConditionVariable
 #define pthread_cond_broadcast WakeAllConditionVariable
 
@@ -64,13 +63,17 @@ int win32_pthread_join(pthread_t *thread, void **value_ptr);
 #define pthread_equal(t1, t2) ((t1).tid == (t2).tid)
 pthread_t pthread_self(void);
 
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+			   const struct timespec *abstime);
+
 static inline void NORETURN pthread_exit(void *ret)
 {
-	ExitThread((DWORD)(intptr_t)ret);
+	_endthreadex((unsigned)(uintptr_t)ret);
 }
 
 typedef DWORD pthread_key_t;
-static inline int pthread_key_create(pthread_key_t *keyp, void (*destructor)(void *value))
+static inline int pthread_key_create(pthread_key_t *keyp, void (*destructor)(void *value) UNUSED)
 {
 	return (*keyp = TlsAlloc()) == TLS_OUT_OF_INDEXES ? EAGAIN : 0;
 }

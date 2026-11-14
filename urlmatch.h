@@ -2,6 +2,7 @@
 #define URL_MATCH_H
 
 #include "string-list.h"
+#include "config.h"
 
 struct url_info {
 	/* normalized url on success, must be freed, otherwise NULL */
@@ -34,6 +35,19 @@ struct url_info {
 };
 
 char *url_normalize(const char *, struct url_info *);
+char *url_parse(const char *, struct url_info *);
+
+/*
+ * Like url_normalize(), but also allows '*' glob characters in the host
+ * portion. Use this when normalizing URL patterns from user configuration.
+ *
+ * Note that '*' is a valid path character per RFC 3986 (as a sub-delim),
+ * so glob patterns using '*' in the path are also accepted.
+ *
+ * Returns a newly allocated normalized string and fills out_info if
+ * non-NULL, or NULL if the pattern is invalid.
+ */
+char *url_normalize_pattern(const char *url, struct url_info *out_info);
 
 struct urlmatch_item {
 	size_t hostmatch_len;
@@ -48,8 +62,8 @@ struct urlmatch_config {
 	const char *key;
 
 	void *cb;
-	int (*collect_fn)(const char *var, const char *value, void *cb);
-	int (*cascade_fn)(const char *var, const char *value, void *cb);
+	config_fn_t collect_fn;
+	config_fn_t cascade_fn;
 	/*
 	 * Compare the two matches, the one just discovered and the existing
 	 * best match and return a negative value if the found item is to be
@@ -66,6 +80,12 @@ struct urlmatch_config {
 	int (*fallback_match_fn)(const char *url, void *cb);
 };
 
-int urlmatch_config_entry(const char *var, const char *value, void *cb);
+#define URLMATCH_CONFIG_INIT { \
+	.vars = STRING_LIST_INIT_DUP, \
+}
+
+int urlmatch_config_entry(const char *var, const char *value,
+			  const struct config_context *ctx, void *cb);
+void urlmatch_config_release(struct urlmatch_config *config);
 
 #endif /* URL_MATCH_H */

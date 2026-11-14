@@ -14,6 +14,10 @@ also by committing .gitmodules and then just removing it from the filesystem.
 
 . ./test-lib.sh
 
+test_expect_success 'setup' '
+	git config --global protocol.file.allow always
+'
+
 test_expect_success 'sparse checkout setup which hides .gitmodules' '
 	git init upstream &&
 	git init submodule &&
@@ -28,8 +32,9 @@ test_expect_success 'sparse checkout setup which hides .gitmodules' '
 		test_tick &&
 		git commit -m "Add submodule"
 	) &&
-	git clone upstream super &&
+	git clone --template= upstream super &&
 	(cd super &&
+		mkdir .git/info &&
 		cat >.git/info/sparse-checkout <<-\EOF &&
 		/*
 		!/.gitmodules
@@ -42,12 +47,12 @@ test_expect_success 'sparse checkout setup which hides .gitmodules' '
 
 test_expect_success 'reading gitmodules config file when it is not checked out' '
 	echo "../submodule" >expect &&
-	git -C super submodule--helper config submodule.submodule.url >actual &&
+	test-tool -C super submodule config-list submodule.submodule.url >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'not writing gitmodules config file when it is not checked out' '
-	test_must_fail git -C super submodule--helper config submodule.submodule.url newurl &&
+	test_must_fail test-tool -C super submodule config-set submodule.submodule.url newurl &&
 	test_path_is_missing super/.gitmodules
 '
 

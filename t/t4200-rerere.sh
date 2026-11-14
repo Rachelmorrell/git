@@ -8,7 +8,7 @@ test_description='git rerere
 ! [fifth] version1
  ! [first] first
   ! [fourth] version1
-   ! [master] initial
+   ! [main] initial
     ! [second] prefer first over second
      ! [third] version2
 ------
@@ -19,8 +19,11 @@ test_description='git rerere
     -  [second] prefer first over second
  +  +  [first] first
     +  [second^] second
-++++++ [master] initial
+++++++ [main] initial
 '
+
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
@@ -57,7 +60,7 @@ test_expect_success 'setup' '
 	test_tick &&
 	git commit -q -a -m first &&
 
-	git checkout -b second master &&
+	git checkout -b second main &&
 	git show first:a1 |
 	sed -e "s/To die, t/To die! T/" -e "s/Some title/Some Title/" >a1 &&
 	echo "* END *" >>a1 &&
@@ -69,7 +72,7 @@ test_expect_success 'nothing recorded without rerere' '
 	rm -rf .git/rr-cache &&
 	git config rerere.enabled false &&
 	test_must_fail git merge first &&
-	! test -d .git/rr-cache
+	test_path_is_missing .git/rr-cache
 '
 
 test_expect_success 'activate rerere, old style (conflicting merge)' '
@@ -78,11 +81,11 @@ test_expect_success 'activate rerere, old style (conflicting merge)' '
 	test_might_fail git config --unset rerere.enabled &&
 	test_must_fail git merge first &&
 
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1 &&
-	grep "^=======\$" $rr/preimage &&
-	! test -f $rr/postimage &&
-	! test -f $rr/thisimage
+	test_grep "^=======\$" $rr/preimage &&
+	test_path_is_missing $rr/postimage &&
+	test_path_is_missing $rr/thisimage
 '
 
 test_expect_success 'rerere.enabled works, too' '
@@ -91,9 +94,9 @@ test_expect_success 'rerere.enabled works, too' '
 	git reset --hard &&
 	test_must_fail git merge first &&
 
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1 &&
-	grep ^=======$ $rr/preimage
+	test_grep ^=======$ $rr/preimage
 '
 
 test_expect_success 'set up rr-cache' '
@@ -101,14 +104,14 @@ test_expect_success 'set up rr-cache' '
 	git config rerere.enabled true &&
 	git reset --hard &&
 	test_must_fail git merge first &&
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1
 '
 
 test_expect_success 'rr-cache looks sane' '
 	# no postimage or thisimage yet
-	! test -f $rr/postimage &&
-	! test -f $rr/thisimage &&
+	test_path_is_missing $rr/postimage &&
+	test_path_is_missing $rr/thisimage &&
 
 	# preimage has right number of lines
 	cnt=$(sed -ne "/^<<<<<<</,/^>>>>>>>/p" $rr/preimage | wc -l) &&
@@ -164,17 +167,17 @@ test_expect_success 'first postimage wins' '
 	git show first:a1 | sed "s/To die: t/To die! T/" >expect &&
 
 	git commit -q -a -m "prefer first over second" &&
-	test -f $rr/postimage &&
+	test_path_is_file $rr/postimage &&
 
 	oldmtimepost=$(test-tool chmtime --get -60 $rr/postimage) &&
 
-	git checkout -b third master &&
+	git checkout -b third main &&
 	git show second^:a1 | sed "s/To die: t/To die! T/" >a1 &&
 	git commit -q -a -m third &&
 
 	test_must_fail git merge first &&
 	# rerere kicked in
-	! grep "^=======\$" a1 &&
+	test_grep ! "^=======\$" a1 &&
 	test_cmp expect a1
 '
 
@@ -185,16 +188,16 @@ test_expect_success 'rerere updates postimage timestamp' '
 
 test_expect_success 'rerere clear' '
 	mv $rr/postimage .git/post-saved &&
-	echo "$sha1	a1" | perl -pe "y/\012/\000/" >.git/MERGE_RR &&
+	echo "$sha1	a1" | tr "\012" "\000" >.git/MERGE_RR &&
 	git rerere clear &&
-	! test -d $rr
+	test_path_is_missing $rr
 '
 
 test_expect_success 'leftover directory' '
 	git reset --hard &&
 	mkdir -p $rr &&
 	test_must_fail git merge first &&
-	test -f $rr/preimage
+	test_path_is_file $rr/preimage
 '
 
 test_expect_success 'missing preimage' '
@@ -202,7 +205,7 @@ test_expect_success 'missing preimage' '
 	mkdir -p $rr &&
 	cp .git/post-saved $rr/postimage &&
 	test_must_fail git merge first &&
-	test -f $rr/preimage
+	test_path_is_file $rr/preimage
 '
 
 test_expect_success 'set up for garbage collection tests' '
@@ -227,16 +230,95 @@ test_expect_success 'set up for garbage collection tests' '
 
 test_expect_success 'gc preserves young or recently used records' '
 	git rerere gc &&
-	test -f $rr/preimage &&
-	test -f $rr2/preimage
+	test_path_is_file $rr/preimage &&
+	test_path_is_file $rr2/preimage
 '
 
 test_expect_success 'old records rest in peace' '
 	test-tool chmtime =$just_over_60_days_ago $rr/postimage &&
 	test-tool chmtime =$just_over_15_days_ago $rr2/preimage &&
 	git rerere gc &&
-	! test -f $rr/preimage &&
-	! test -f $rr2/preimage
+	test_path_is_missing $rr/preimage &&
+	test_path_is_missing $rr2/preimage
+'
+
+test_expect_success 'gc --skip-locked does nothing while MERGE_RR is locked' '
+	mkdir -p $rr2 &&
+	echo Hello >$rr2/preimage &&
+	test-tool chmtime =$just_over_15_days_ago $rr2/preimage &&
+
+	test_when_finished "rm -f .git/MERGE_RR.lock" &&
+	>.git/MERGE_RR.lock &&
+	git rerere gc --skip-locked 2>err &&
+	test_must_be_empty err &&
+	test_path_is_file $rr2/preimage
+'
+
+test_expect_success 'gc --skip-locked prunes while MERGE_RR is not locked' '
+	mkdir -p $rr2 &&
+	echo Hello >$rr2/preimage &&
+	test-tool chmtime =$just_over_15_days_ago $rr2/preimage &&
+
+	git rerere gc --skip-locked &&
+	test_path_is_missing $rr2/preimage
+'
+
+test_expect_success '--skip-locked is only accepted by gc' '
+	test_must_fail git rerere --skip-locked clear 2>err &&
+	test_grep "option .--skip-locked. requires .gc." err
+'
+
+test_expect_success 'a held lock is waited out within rerere.lockTimeout' '
+	git reset --hard &&
+	rm -rf $rr &&
+	test_when_finished "wait && rm -f .git/MERGE_RR.lock" &&
+	>.git/MERGE_RR.lock &&
+	{
+		( sleep 1 && rm -f .git/MERGE_RR.lock ) &
+	} &&
+	test_must_fail git -c rerere.lockTimeout=5000 merge first 2>err &&
+	test_grep ! "Unable to create.*MERGE_RR\.lock" err &&
+	test_grep "^=======\$" $rr/preimage
+'
+
+test_expect_success 'merge fails on a lock it cannot take' '
+	git reset --hard &&
+	rm -rf $rr &&
+	test_when_finished "rm -f .git/MERGE_RR.lock" &&
+	>.git/MERGE_RR.lock &&
+	test_must_fail git -c rerere.lockTimeout=0 merge first 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err &&
+	test_grep "^=======\$" a1 &&
+	test_path_is_missing $rr/preimage
+'
+
+test_expect_success 'rerere, forget, clear and gc fail on a lock they cannot take' '
+	test_when_finished "rm -f .git/MERGE_RR.lock" &&
+	>.git/MERGE_RR.lock &&
+	test_must_fail git -c rerere.lockTimeout=0 rerere 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err &&
+	test_must_fail git -c rerere.lockTimeout=0 rerere forget a1 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err &&
+	test_must_fail git -c rerere.lockTimeout=0 rerere clear 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err &&
+	test_must_fail git -c rerere.lockTimeout=0 rerere gc 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err
+'
+
+test_expect_success 'rebase --abort fails on a lock it cannot take' '
+	git reset --hard &&
+	git checkout -b lock-held-abort third &&
+	test_when_finished "git checkout third && git branch -D lock-held-abort" &&
+	test_must_fail git rebase first &&
+	test_when_finished "test_might_fail git rebase --abort" &&
+	test_when_finished "rm -f .git/MERGE_RR.lock" &&
+	>.git/MERGE_RR.lock &&
+	test_must_fail git -c rerere.lockTimeout=0 rebase --abort 2>err &&
+	test_grep "Unable to create.*MERGE_RR\.lock" err &&
+	test_path_is_dir .git/rebase-merge &&
+	rm .git/MERGE_RR.lock &&
+	git rebase --abort &&
+	test_path_is_missing .git/rebase-merge
 '
 
 rerere_gc_custom_expiry_test () {
@@ -362,9 +444,6 @@ test_expect_success 'set up an unresolved merge' '
 	test_might_fail git config --unset rerere.autoupdate &&
 	git reset --hard &&
 	git checkout version2 &&
-	fifth=$(git rev-parse fifth) &&
-	echo "$fifth		branch fifth of ." |
-	git fmt-merge-msg >msg &&
 	ancestor=$(git merge-base version2 fifth) &&
 	test_must_fail git merge-recursive "$ancestor" -- HEAD fifth &&
 
@@ -433,13 +512,13 @@ test_expect_success 'rerere --no-no-rerere-autoupdate' '
 	git update-index --index-info <failedmerge &&
 	cp file3.conflict file3 &&
 	test_must_fail git rerere --no-no-rerere-autoupdate 2>err &&
-	test_i18ngrep [Uu]sage err &&
+	test_grep [Uu]sage err &&
 	test_must_fail git update-index --refresh
 '
 
 test_expect_success 'rerere -h' '
-	test_must_fail git rerere -h >help &&
-	test_i18ngrep [Uu]sage help
+	git rerere -h >help &&
+	test_grep [Uu]sage help
 '
 
 concat_insert () {
@@ -580,13 +659,13 @@ test_expect_success 'multiple identical conflicts' '
 test_expect_success 'rerere with unexpected conflict markers does not crash' '
 	git reset --hard &&
 
-	git checkout -b branch-1 master &&
+	git checkout -b branch-1 main &&
 	echo "bar" >test &&
 	git add test &&
 	git commit -q -m two &&
 
 	git reset --hard &&
-	git checkout -b branch-2 master &&
+	git checkout -b branch-2 main &&
 	echo "foo" >test &&
 	git add test &&
 	git commit -q -a -m one &&
@@ -601,7 +680,7 @@ test_expect_success 'rerere with unexpected conflict markers does not crash' '
 test_expect_success 'rerere with inner conflict markers' '
 	git reset --hard &&
 
-	git checkout -b A master &&
+	git checkout -b A main &&
 	echo "bar" >test &&
 	git add test &&
 	git commit -q -m two &&
@@ -610,7 +689,7 @@ test_expect_success 'rerere with inner conflict markers' '
 	git commit -q -m three &&
 
 	git reset --hard &&
-	git checkout -b B master &&
+	git checkout -b B main &&
 	echo "foo" >test &&
 	git add test &&
 	git commit -q -a -m one &&
@@ -651,11 +730,11 @@ test_expect_success 'setup simple stage 1 handling' '
 		git add original &&
 		git commit -m original &&
 
-		git checkout -b A master &&
+		git checkout -b A main &&
 		git mv original A &&
 		git commit -m "rename to A" &&
 
-		git checkout -b B master &&
+		git checkout -b B main &&
 		git mv original B &&
 		git commit -m "rename to B"
 	)
@@ -668,6 +747,120 @@ test_expect_success 'test simple stage 1 handling' '
 		git config rerere.enabled true &&
 		git checkout A^0 &&
 		test_must_fail git merge B^0
+	)
+'
+
+test_expect_success 'rerere does not crash with missing preimage' '
+	git config rerere.enabled true &&
+
+	echo bar >test &&
+	git add test &&
+	git commit -m "one" &&
+	git branch rerere_no_crash &&
+
+	echo foo >>test &&
+	git add test &&
+	git commit -m "two" &&
+
+	git checkout rerere_no_crash &&
+	echo "bar" >>test &&
+	git add test &&
+	git commit -m "three" &&
+
+	test_must_fail git rebase main &&
+	rm .git/rr-cache/*/preimage &&
+	git rebase --abort
+'
+
+test_expect_success 'rerere does not crash with unmatched conflict marker' '
+	git config rerere.enabled true &&
+
+	echo bar >test &&
+	git add test &&
+	git commit -m "one" &&
+	git branch rerere_no_preimage &&
+
+	cat >test <<-EOF &&
+	test
+	bar
+	foobar
+	EOF
+	git add test &&
+	git commit -m "two" &&
+
+	git checkout rerere_no_preimage &&
+	echo "bar" >>test &&
+	git add test &&
+	git commit -m "three" &&
+
+	cat >test <<-EOF &&
+	foobar
+	bar
+	bar
+	EOF
+	git add test &&
+	git commit -m "four" &&
+
+	test_must_fail git rebase main &&
+	cat >test <<-EOF &&
+	test
+	bar
+	<<<<<<< HEAD
+	foobar
+	bar
+	EOF
+	git add test &&
+	test_must_fail git rebase --continue
+'
+
+test_expect_success 'rerere preserves conflicts when driver output is unreadable' '
+	test_create_repo unreadable-output &&
+	(
+		cd unreadable-output &&
+		git config rerere.enabled true &&
+		git config rerere.autoupdate true &&
+		write_script merge-driver <<-\EOF &&
+		git merge-file "$@"
+		status=$?
+		if test -f fail-read
+		then
+			rm "$1" || exit 1
+		fi
+		exit "$status"
+		EOF
+		git config merge.unreadable.driver "./merge-driver %A %O %B" &&
+		echo "file merge=unreadable" >.gitattributes &&
+		test_commit base file base &&
+		git checkout -b one &&
+		test_commit --no-tag one file one &&
+		git checkout -b two base &&
+		test_commit --no-tag two file two &&
+
+		# Teach rerere a resolution while the driver works normally.
+		test_must_fail git merge one &&
+		echo resolved >file &&
+		git rerere &&
+		git merge --abort &&
+
+		# Recreate the conflict without replaying the resolution yet.
+		test_must_fail git -c rerere.enabled=false merge one &&
+
+		# We will expect the same conflicted content after rerere fails
+		# below.
+		cp file expect &&
+		git ls-files -u >expect-index &&
+		test_file_not_empty expect-index &&
+
+		# Now we try rerere again, but the merge driver will cause the
+		# read to fail.
+		>fail-read &&
+		git rerere 2>err &&
+		test_grep "Could not stat" err &&
+
+		# And we expect the conflicted state.
+		test_cmp expect file &&
+		git ls-files -u >actual-index &&
+		test_cmp expect-index actual-index
 	)
 '
 

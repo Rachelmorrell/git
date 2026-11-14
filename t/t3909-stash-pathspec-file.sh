@@ -29,7 +29,7 @@ verify_expect () {
 test_expect_success 'simplest' '
 	restore_checkpoint &&
 
-	# More files are written to make sure that git didnt ignore
+	# More files are written to make sure that git did not ignore
 	# --pathspec-from-file, stashing everything
 	echo A >fileA.t &&
 	echo B >fileB.t &&
@@ -47,7 +47,7 @@ test_expect_success 'simplest' '
 test_expect_success '--pathspec-file-nul' '
 	restore_checkpoint &&
 
-	# More files are written to make sure that git didnt ignore
+	# More files are written to make sure that git did not ignore
 	# --pathspec-from-file, stashing everything
 	echo A >fileA.t &&
 	echo B >fileB.t &&
@@ -66,7 +66,7 @@ test_expect_success '--pathspec-file-nul' '
 test_expect_success 'only touches what was listed' '
 	restore_checkpoint &&
 
-	# More files are written to make sure that git didnt ignore
+	# More files are written to make sure that git did not ignore
 	# --pathspec-from-file, stashing everything
 	echo A >fileA.t &&
 	echo B >fileB.t &&
@@ -88,13 +88,13 @@ test_expect_success 'error conditions' '
 	echo fileA.t >list &&
 
 	test_must_fail git stash push --pathspec-from-file=list --patch 2>err &&
-	test_i18ngrep -e "--pathspec-from-file is incompatible with --patch" err &&
+	test_grep -e "options .--pathspec-from-file. and .--patch. cannot be used together" err &&
 
 	test_must_fail git stash push --pathspec-from-file=list -- fileA.t 2>err &&
-	test_i18ngrep -e "--pathspec-from-file is incompatible with pathspec arguments" err &&
+	test_grep -e ".--pathspec-from-file. and pathspec arguments cannot be used together" err &&
 
 	test_must_fail git stash push --pathspec-file-nul 2>err &&
-	test_i18ngrep -e "--pathspec-file-nul requires --pathspec-from-file" err
+	test_grep -e "the option .--pathspec-file-nul. requires .--pathspec-from-file." err
 '
 
 test_done
